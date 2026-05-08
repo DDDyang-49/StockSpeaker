@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -32,7 +33,8 @@ data class ServiceUiState(
     val largeBidsSpeak: List<String> = emptyList(),
     val statusText: String = "🔴 监控已停止",
     val isRunning: Boolean = false,
-    val lastSpeakTime: String = ""
+    val lastSpeakTime: String = "",
+    val debugLog: List<String> = emptyList()
 )
 
 class StockMonitorService : Service() {
@@ -65,59 +67,137 @@ class StockMonitorService : Service() {
     private var isSpeaking = false
     private val networkExecutor = Executors.newSingleThreadExecutor()
 
+    // Diagnostic log buffer
+    private val debugLogs = mutableListOf<String>()
+    private val triedEnginePkgs = mutableSetOf<String?>() // track which engines we've attempted
+
+    private fun log(msg: String) {
+        val ts = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        val line = "[$ts] $msg"
+        debugLogs.add(line)
+        if (debugLogs.size > 100) debugLogs.removeAt(0)
+        // Bubble latest diagnostic info into status so user sees it immediately
+        val current = uiState.value
+        uiState.value = current.copy(
+            statusText = line.take(80),
+            debugLog = debugLogs.toList()
+        )
+    }
+
     override fun onCreate() {
         super.onCreate()
         configManager = ConfigManager(this)
         handler = Handler(Looper.getMainLooper())
+        createNotificationChannel()
+        initTts()
+    }
 
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                val engine = tts?.defaultEngine ?: "?"
-                var setResult = TextToSpeech.ERROR
+    // ── TTS: try default engine, then enumerate all engines on device ──
 
-                // Try zh_CN first, then generic zh, then system default
-                for (locale in listOf(Locale.SIMPLIFIED_CHINESE, Locale.CHINESE, Locale.getDefault())) {
-                    val r = tts?.setLanguage(locale) ?: TextToSpeech.ERROR
-                    if (r == TextToSpeech.SUCCESS) {
-                        setResult = r
-                        break
-                    }
+    private fun initTts() {
+        log("TTS初始化开始...")
+        tryTtsEngine(null) // null = use system default engine
+    }
+
+    private fun tryTtsEngine(enginePkg: String?) {
+        // Clean up previous failed instance
+        tts?.shutdown()
+        tts = null
+
+        triedEnginePkgs.add(enginePkg)
+        val label = enginePkg ?: "系统默认"
+        log("尝试引擎: $label")
+
+        val cb = TextToSpeech.OnInitListener { status ->
+            if (status != TextToSpeech.SUCCESS) {
+                log("✗ $label init失败 status=$status")
+                onEngineFailed(enginePkg)
+                return@OnInitListener
+            }
+
+            val actualEngine = tts?.defaultEngine ?: "?"
+            log("引擎连接成功: $actualEngine")
+
+            // Try locales: zh_CN → zh → default
+            var langOk = false
+            for (loc in listOf(Locale.SIMPLIFIED_CHINESE, Locale.CHINESE, Locale.getDefault())) {
+                val r = tts?.setLanguage(loc) ?: TextToSpeech.ERROR
+                val desc = when (r) {
+                    TextToSpeech.SUCCESS -> "SUCCESS"
+                    TextToSpeech.LANG_MISSING_DATA -> "MISSING_DATA"
+                    TextToSpeech.LANG_NOT_SUPPORTED -> "NOT_SUPPORTED"
+                    else -> "UNKNOWN($r)"
                 }
-
-                if (setResult == TextToSpeech.SUCCESS) {
-                    tts?.setSpeechRate(0.9f)
-                    handler.postDelayed({ ttsReady = true }, 300)
-                } else {
-                    uiState.value = uiState.value.copy(
-                        statusText = "⚠️ TTS不支持中文(引擎:$engine err:$setResult) → 设置→文字转语音→下载中文语音"
-                    )
+                log("  setLanguage($loc) → $desc")
+                if (r == TextToSpeech.SUCCESS) {
+                    langOk = true
+                    break
                 }
+            }
+
+            if (langOk) {
+                tts?.setSpeechRate(0.9f)
+                tts?.setOnUtteranceProgressListener(progressListener)
+                ttsReady = true
+                log("✓ TTS就绪 引擎=$actualEngine")
             } else {
-                uiState.value = uiState.value.copy(
-                    statusText = "⚠️ TTS引擎初始化失败(status=$status)"
-                )
+                log("✗ $actualEngine 不支持中文")
+                onEngineFailed(enginePkg)
             }
         }
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {
-                isSpeaking = true
-            }
-            override fun onDone(utteranceId: String?) {
-                isSpeaking = false
-                handler.removeCallbacks(speakingTimeout)
-            }
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                isSpeaking = false
-                handler.removeCallbacks(speakingTimeout)
-            }
-            override fun onError(utteranceId: String?, errorCode: Int) {
-                isSpeaking = false
-                handler.removeCallbacks(speakingTimeout)
-            }
-        })
 
-        createNotificationChannel()
+        tts = if (enginePkg != null) {
+            TextToSpeech(this, cb, enginePkg)
+        } else {
+            TextToSpeech(this, cb)
+        }
+    }
+
+    private fun onEngineFailed(enginePkg: String?) {
+        // Query all TTS engines on the device
+        val pm = packageManager
+        val intent = Intent("android.intent.action.TTS_SERVICE")
+        val engines = pm.queryIntentServices(intent, PackageManager.GET_META_DATA)
+
+        val allPkgs = engines.map { it.serviceInfo.packageName }
+        if (allPkgs.isEmpty()) {
+            log("✗ 设备上没有任何TTS引擎！请安装Google文字转语音")
+            return
+        }
+
+        log("设备TTS引擎列表: ${allPkgs.joinToString()}")
+
+        val next = allPkgs.firstOrNull { it !in triedEnginePkgs }
+        if (next != null) {
+            log("切换到下一个引擎: $next")
+            tryTtsEngine(next)
+        } else {
+            log("✗ 已尝试所有引擎，均不支持中文")
+            log("请在 设置→辅助功能→文字转语音→下载中文语音数据")
+            log("已尝试: ${triedEnginePkgs.filterNotNull().joinToString()}")
+        }
+    }
+
+    // Progress listener (shared across engine attempts)
+    private val progressListener = object : UtteranceProgressListener() {
+        override fun onStart(utteranceId: String?) {
+            isSpeaking = true
+        }
+        override fun onDone(utteranceId: String?) {
+            isSpeaking = false
+            handler.removeCallbacks(speakingTimeout)
+        }
+        @Deprecated("Deprecated in Java")
+        override fun onError(utteranceId: String?) {
+            isSpeaking = false
+            handler.removeCallbacks(speakingTimeout)
+            log("⚠ TTS onError(deprecated)")
+        }
+        override fun onError(utteranceId: String?, errorCode: Int) {
+            isSpeaking = false
+            handler.removeCallbacks(speakingTimeout)
+            log("⚠ TTS onError code=$errorCode")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -130,9 +210,12 @@ class StockMonitorService : Service() {
             intervalLargeEvents.clear()
 
             startForeground(NOTIFICATION_ID, buildNotification(config.stockCode))
-            uiState.value = ServiceUiState(
-                statusText = "🟢 正在监控: ${config.stockCode}...",
-                isRunning = true
+            val existing = uiState.value
+            uiState.value = existing.copy(
+                statusText = if (ttsReady) "🟢 正在监控: ${config.stockCode}..."
+                             else "${existing.statusText.take(70)}\n等待TTS就绪...",
+                isRunning = true,
+                debugLog = debugLogs.toList()
             )
             runLoop()
         }
@@ -187,7 +270,7 @@ class StockMonitorService : Service() {
         val now = System.currentTimeMillis()
         val nowStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(now))
 
-        uiState.value = ServiceUiState(
+        uiState.value = uiState.value.copy(
             stockName = data.name,
             price = data.price,
             changePct = data.changePct,
@@ -199,9 +282,7 @@ class StockMonitorService : Service() {
             largeBids = data.largeBids,
             largeAsksSpeak = data.largeAsksSpeak,
             largeBidsSpeak = data.largeBidsSpeak,
-            statusText = uiState.value.statusText,
-            isRunning = true,
-            lastSpeakTime = uiState.value.lastSpeakTime
+            isRunning = true
         )
 
         if (currentHand >= config.largeOrderThreshold) {
@@ -235,13 +316,20 @@ class StockMonitorService : Service() {
     }
 
     private fun trySpeak(text: String): Boolean {
-        if (!ttsReady || isSpeaking) return false
+        if (!ttsReady) {
+            if (debugLogs.none { it.contains("ttsReady=false") }) {
+                log("speak跳过: ttsReady=false")
+            }
+            return false
+        }
+        if (isSpeaking) return false
 
         isSpeaking = true
         val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "stock_speak")
             ?: TextToSpeech.ERROR
         if (result != TextToSpeech.SUCCESS) {
             isSpeaking = false
+            log("⚠ speak()返回ERROR tts=$tts ttsReady=$ttsReady")
             return false
         }
 

@@ -524,29 +524,66 @@ private fun DataChip(label: String, value: String) {
 
 @Composable
 private fun StatusBar(uiState: ServiceUiState) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Main status pill
         Surface(
             shape = RoundedCornerShape(20.dp),
-            color = if (uiState.isRunning) Color(0xFFE8F5E9) else Color(0xFFFFF3E0)
+            color = when {
+                uiState.statusText.contains("✗") || uiState.statusText.contains("⚠") -> Color(0xFFFFEBEE)
+                uiState.isRunning -> Color(0xFFE8F5E9)
+                else -> Color(0xFFFFF3E0)
+            }
         ) {
             Text(
-                text = if (uiState.isRunning && uiState.lastSpeakTime.isNotEmpty()) {
-                    "📢 上次播报 ${uiState.lastSpeakTime}"
-                } else {
-                    uiState.statusText
+                text = buildString {
+                    if (uiState.isRunning && uiState.lastSpeakTime.isNotEmpty()) {
+                        append("📢 上次播报 ${uiState.lastSpeakTime}")
+                    } else {
+                        append(uiState.statusText)
+                    }
                 },
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
-                color = if (uiState.isRunning) Color(0xFF2E7D32) else Color(0xFFE65100),
+                color = when {
+                    uiState.statusText.contains("✗") || uiState.statusText.contains("⚠") -> Color(0xFFC62828)
+                    uiState.isRunning -> Color(0xFF2E7D32)
+                    else -> Color(0xFFE65100)
+                },
                 textAlign = TextAlign.Center
             )
+        }
+
+        // Diagnostic log (visible when running with debug info)
+        if (uiState.isRunning && uiState.debugLog.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Card(
+                shape = RoundedCornerShape(10.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        text = "📋 诊断日志 (截图发给开发者)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF616161)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    // Show last 12 lines
+                    val lines = uiState.debugLog.takeLast(12)
+                    Text(
+                        text = lines.joinToString("\n"),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFF424242),
+                        lineHeight = 14.sp
+                    )
+                }
+            }
         }
     }
     Spacer(modifier = Modifier.height(8.dp))
