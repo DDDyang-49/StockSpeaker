@@ -6,13 +6,11 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.speech.tts.Voice
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.text.SimpleDateFormat
@@ -74,41 +72,35 @@ class StockMonitorService : Service() {
 
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                // Configure audio: play as notification-type speech, don't steal focus from music
-                val attrs = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-                tts?.setAudioAttributes(attrs)
-
-                // Try Chinese voice first, then fall back to default
-                val chineseVoice: Voice? = tts?.voices?.find {
-                    it.locale.language == Locale.CHINESE.language ||
-                    it.locale.language == Locale.SIMPLIFIED_CHINESE.language
+                // Check if Chinese is actually available (not just "reported" but "has data")
+                val langAvail = tts?.isLanguageAvailable(Locale.CHINESE)
+                val ok = when (langAvail) {
+                    TextToSpeech.LANG_AVAILABLE,
+                    TextToSpeech.LANG_COUNTRY_AVAILABLE,
+                    TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE -> {
+                        tts?.setLanguage(Locale.CHINESE)
+                        true
+                    }
+                    else -> {
+                        // Try default locale as fallback
+                        val defResult = tts?.setLanguage(Locale.getDefault())
+                        defResult == TextToSpeech.SUCCESS
+                    }
                 }
-                if (chineseVoice != null) {
-                    tts?.voice = chineseVoice
-                    ttsReady = true
+                if (ok) {
+                    tts?.setSpeechRate(0.9f)
+                    // Prime the TTS engine with a silent utterance
+                    tts?.playSilentUtterance(200, TextToSpeech.QUEUE_FLUSH, null)
+                    // Delay marking ready to let engine fully initialize
+                    handler.postDelayed({ ttsReady = true }, 600)
                 } else {
-                    // Fallback: try setLanguage
-                    var langResult = tts?.setLanguage(Locale.SIMPLIFIED_CHINESE)
-                    if (langResult == TextToSpeech.LANG_MISSING_DATA ||
-                        langResult == TextToSpeech.LANG_NOT_SUPPORTED
-                    ) {
-                        langResult = tts?.setLanguage(Locale.CHINESE)
-                    }
-                    if (langResult == TextToSpeech.LANG_MISSING_DATA ||
-                        langResult == TextToSpeech.LANG_NOT_SUPPORTED
-                    ) {
-                        langResult = tts?.setLanguage(Locale.getDefault())
-                    }
-                    ttsReady = (langResult == TextToSpeech.SUCCESS)
+                    uiState.value = uiState.value.copy(
+                        statusText = "⚠️ 中文语音包未安装 → 设置→文字转语音→下载中文"
+                    )
                 }
-                tts?.setSpeechRate(0.9f)
-            }
-            if (!ttsReady) {
+            } else {
                 uiState.value = uiState.value.copy(
-                    statusText = "⚠️ TTS 不可用：请到 设置→文字转语音 下载中文语音包"
+                    statusText = "⚠️ TTS 初始化失败(status=${status})"
                 )
             }
         }
@@ -302,7 +294,7 @@ class StockMonitorService : Service() {
         val channel = NotificationChannel(
             CHANNEL_ID,
             getString(R.string.channel_name),
-            NotificationManager.IMPORTANCE_LOW
+            NotificationManager.IMPORTANCE_DEFAULT
         ).apply { description = getString(R.string.channel_desc) }
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(channel)
