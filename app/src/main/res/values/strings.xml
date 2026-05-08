@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">摸鱼听盘</string>
+    <string name="channel_name">盯盘服务</string>
+    <string name="channel_desc">股票盯盘后台播报</string>
+</resources>

@@ -1,2 +1,3 @@
+flet
 requests
-edge-tts
+edge-ttsflet-audio

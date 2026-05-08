@@ -1,4 +1,7 @@
-﻿# -*- coding: utf-8 -*-
+import io
+
+with open(r'E:\zAB\股票\StockSpeaker\main.py', 'w', encoding='utf-8') as f:
+    f.write(r'''# -*- coding: utf-8 -*-
 import flet as ft
 import requests
 import time
@@ -9,7 +12,6 @@ import json
 import base64
 import urllib.parse
 import traceback
-import flet_audio
 
 CONFIG_FILE = 'config.json'
 
@@ -26,7 +28,6 @@ def save_config(cfg):
     except: pass
 
 REFRESH_INTERVAL = 2  
-LARGE_ORDER_THRESHOLD = 500  
 
 stock_history = {}    
 last_speak_time = 0
@@ -93,18 +94,14 @@ def main(page: ft.Page):
         page.title = "摸鱼听盘啦。。"
         page.scroll = "adaptive"
         page.theme_mode = "light"
-        
-        # 兼容纯净环境，处理可能没有微软雅黑字体的问题
         page.theme = ft.Theme(font_family="sans-serif")
         page.padding = 15
         
-        audio_player = flet_audio.Audio(autoplay=True)
+        audio_player = ft.Audio(autoplay=True)
         page.overlay.append(audio_player)
         
-        # 将TTS替换为纯 requests + Web API，以避免安卓底层不支持 C扩展导致的白屏崩溃
         def generate_and_play(text):
             try:
-                # 使用免费不限制的网页TTS接口，完全脱离本地环境依赖
                 url = f"https://dict.youdao.com/dictvoice?audio={urllib.parse.quote(text)}&le=zh"
                 res = requests.get(url, timeout=5)
                 if res.status_code == 200:
@@ -118,8 +115,7 @@ def main(page: ft.Page):
             while True:
                 text = speech_queue.get()
                 if text is None: break
-                try: 
-                    generate_and_play(text)
+                try: generate_and_play(text)
                 except: pass
                 time.sleep(4)
                 speech_queue.task_done()
@@ -137,7 +133,7 @@ def main(page: ft.Page):
                 
                 if interval_large_events:
                     largest = max(interval_large_events, key=lambda x: x[2])
-                    text += f"。期间{largest[0]}{largest[1]}{largest[2]}手"
+                    text += f"。期间{largest[0]}{largest[1]}{largest[2]}手。"
                     interval_large_events.clear()
                     
                 speech_queue.put(text)
@@ -223,18 +219,21 @@ def main(page: ft.Page):
 
         def show_android_tips(e):
             def close_dlg(e):
-                page.close(dlg) # 重点修改：使用新版 API 关闭对话框
+                dlg.open = False
+                page.update()
             
             dlg = ft.AlertDialog(
                 title=ft.Text("安卓防掉后台指南", weight="bold"),
-                content=ft.Text("受安卓限制，无原生后台极易被系统清理。如果您希望应用能在后台持续播报，请务必在手机设置：\n\n1. 任务列表给本App加【锁】\n2. 电池优化设为【无限制】\n3. 开启【自启动】与【允许后台活动】", size=14),
+                content=ft.Text("受安卓限制，无原生后台服务极易被系统清理。如果您希望应用能在后台持续播报，请务必在手机去设置：\n\n1. 在任务列表界面给本App加【锁】\n2. 手机设置 -> 找到本应用 -> 电池优化设为【无限制】\n3. 权限管理 -> 开启【自启动】与【允许后台活动】", size=14),
                 actions=[ft.TextButton("我知道了", on_click=close_dlg)]
             )
-            page.open(dlg) # 重点修改：使用新版 API 直接唤起对话框
+            page.dialog = dlg
+            dlg.open = True
+            page.update()
 
         stock_input = ft.TextField(label="股票代码", value=app_config.get("stock_code", ""), expand=1)
         interval_input = ft.TextField(label="播报间隔(秒)", value=str(app_config.get("speak_interval", 15)), expand=1)
-        large_input = ft.TextField(label="大单探测阈值", value=str(app_config.get("large_order_threshold", 500)), expand=1)
+        large_input = ft.TextField(label="大单探测阈值(手)", value=str(app_config.get("large_order_threshold", 500)), expand=1)
         
         cb_price = ft.Checkbox(label="现价", value=app_config.get("speak_price", True))
         cb_pct = ft.Checkbox(label="涨幅", value=app_config.get("speak_pct", True))
@@ -243,7 +242,7 @@ def main(page: ft.Page):
         cb_vol = ft.Checkbox(label="量比", value=app_config.get("speak_vol_ratio", False))
         cb_hand = ft.Checkbox(label="现手", value=app_config.get("speak_current_hand", True))
         cb_large = ft.Checkbox(label="盘口大单", value=app_config.get("speak_large_orders", True))
-        
+
         controls_group = ft.Column([
             ft.Row([stock_input, interval_input]),
             ft.Row([large_input]),
@@ -252,7 +251,7 @@ def main(page: ft.Page):
         ])
 
         btn = ft.ElevatedButton("开始自动盯盘", on_click=toggle_run, icon="play_arrow", expand=1, height=50)
-        btn_tips = ft.IconButton(icon="help_outlined", tooltip="防掉后台说明", on_click=show_android_tips)
+        btn_tips = ft.IconButton(icon=ft.icons.HELP_OUTLINE, tooltip="防掉后台说明", on_click=show_android_tips)
         
         status_text = ft.Text("准备就绪", color="grey")
         info_text = ft.Text(spans=[])
@@ -278,3 +277,4 @@ def main(page: ft.Page):
         page.add(ft.Text(error_msg, selectable=True, color="red"))
 
 ft.app(target=main)
+''')
