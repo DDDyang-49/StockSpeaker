@@ -6,11 +6,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.text.SimpleDateFormat
@@ -72,22 +74,48 @@ class StockMonitorService : Service() {
 
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                var result = tts?.setLanguage(Locale.SIMPLIFIED_CHINESE)
-                if (result == TextToSpeech.LANG_MISSING_DATA ||
-                    result == TextToSpeech.LANG_NOT_SUPPORTED
-                ) {
-                    result = tts?.setLanguage(Locale.CHINESE)
+                // Configure audio: play as notification-type speech, don't steal focus from music
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                tts?.setAudioAttributes(attrs)
+
+                // Try Chinese voice first, then fall back to default
+                val chineseVoice: Voice? = tts?.voices?.find {
+                    it.locale.language == Locale.CHINESE.language ||
+                    it.locale.language == Locale.SIMPLIFIED_CHINESE.language
                 }
-                ttsReady = (result == TextToSpeech.SUCCESS)
+                if (chineseVoice != null) {
+                    tts?.voice = chineseVoice
+                    ttsReady = true
+                } else {
+                    // Fallback: try setLanguage
+                    var langResult = tts?.setLanguage(Locale.SIMPLIFIED_CHINESE)
+                    if (langResult == TextToSpeech.LANG_MISSING_DATA ||
+                        langResult == TextToSpeech.LANG_NOT_SUPPORTED
+                    ) {
+                        langResult = tts?.setLanguage(Locale.CHINESE)
+                    }
+                    if (langResult == TextToSpeech.LANG_MISSING_DATA ||
+                        langResult == TextToSpeech.LANG_NOT_SUPPORTED
+                    ) {
+                        langResult = tts?.setLanguage(Locale.getDefault())
+                    }
+                    ttsReady = (langResult == TextToSpeech.SUCCESS)
+                }
+                tts?.setSpeechRate(0.9f)
             }
             if (!ttsReady) {
                 uiState.value = uiState.value.copy(
-                    statusText = "⚠️ TTS 语音引擎不可用，请检查系统文字转语音设置"
+                    statusText = "⚠️ TTS 不可用：请到 设置→文字转语音 下载中文语音包"
                 )
             }
         }
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
+            override fun onStart(utteranceId: String?) {
+                isSpeaking = true
+            }
             override fun onDone(utteranceId: String?) {
                 isSpeaking = false
                 handler.removeCallbacks(speakingTimeout)
@@ -220,26 +248,13 @@ class StockMonitorService : Service() {
     }
 
     private fun trySpeak(text: String) {
-        if (!ttsReady) {
-            uiState.value = uiState.value.copy(
-                statusText = "⏳ TTS 引擎初始化中，即将播报..."
-            )
-            // Retry after 1 second
-            handler.postDelayed({
-                if (isRunning && ttsReady) {
-                    trySpeak(text)
-                }
-            }, 1000)
-            return
-        }
-
-        if (isSpeaking) return
+        if (!ttsReady || isSpeaking) return
 
         isSpeaking = true
-        tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "stock_speak")
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "stock_speak")
 
-        // Safety timeout: force reset isSpeaking after 15 seconds
-        handler.postDelayed(speakingTimeout, 15000)
+        // Safety timeout: force reset after 10 seconds
+        handler.postDelayed(speakingTimeout, 10000)
     }
 
     private val speakingTimeout = Runnable {
