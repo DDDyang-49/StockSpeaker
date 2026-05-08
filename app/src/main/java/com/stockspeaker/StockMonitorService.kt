@@ -72,35 +72,29 @@ class StockMonitorService : Service() {
 
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                // Check if Chinese is actually available (not just "reported" but "has data")
-                val langAvail = tts?.isLanguageAvailable(Locale.CHINESE)
-                val ok = when (langAvail) {
-                    TextToSpeech.LANG_AVAILABLE,
-                    TextToSpeech.LANG_COUNTRY_AVAILABLE,
-                    TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE -> {
-                        tts?.setLanguage(Locale.CHINESE)
-                        true
-                    }
-                    else -> {
-                        // Try default locale as fallback
-                        val defResult = tts?.setLanguage(Locale.getDefault())
-                        defResult == TextToSpeech.SUCCESS
+                val engine = tts?.defaultEngine ?: "?"
+                var setResult = TextToSpeech.ERROR
+
+                // Try zh_CN first, then generic zh, then system default
+                for (locale in listOf(Locale.SIMPLIFIED_CHINESE, Locale.CHINESE, Locale.getDefault())) {
+                    val r = tts?.setLanguage(locale) ?: TextToSpeech.ERROR
+                    if (r == TextToSpeech.SUCCESS) {
+                        setResult = r
+                        break
                     }
                 }
-                if (ok) {
+
+                if (setResult == TextToSpeech.SUCCESS) {
                     tts?.setSpeechRate(0.9f)
-                    // Prime the TTS engine with a silent utterance
-                    tts?.playSilentUtterance(200, TextToSpeech.QUEUE_FLUSH, null)
-                    // Delay marking ready to let engine fully initialize
-                    handler.postDelayed({ ttsReady = true }, 600)
+                    handler.postDelayed({ ttsReady = true }, 300)
                 } else {
                     uiState.value = uiState.value.copy(
-                        statusText = "⚠️ 中文语音包未安装 → 设置→文字转语音→下载中文"
+                        statusText = "⚠️ TTS不支持中文(引擎:$engine err:$setResult) → 设置→文字转语音→下载中文语音"
                     )
                 }
             } else {
                 uiState.value = uiState.value.copy(
-                    statusText = "⚠️ TTS 初始化失败(status=${status})"
+                    statusText = "⚠️ TTS引擎初始化失败(status=$status)"
                 )
             }
         }
@@ -233,20 +227,27 @@ class StockMonitorService : Service() {
                     intervalLargeEvents.clear()
                 }
 
-                trySpeak(speakText)
-                uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+                if (trySpeak(speakText)) {
+                    uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+                }
             }
         }
     }
 
-    private fun trySpeak(text: String) {
-        if (!ttsReady || isSpeaking) return
+    private fun trySpeak(text: String): Boolean {
+        if (!ttsReady || isSpeaking) return false
 
         isSpeaking = true
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "stock_speak")
+        val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "stock_speak")
+            ?: TextToSpeech.ERROR
+        if (result != TextToSpeech.SUCCESS) {
+            isSpeaking = false
+            return false
+        }
 
         // Safety timeout: force reset after 10 seconds
         handler.postDelayed(speakingTimeout, 10000)
+        return true
     }
 
     private val speakingTimeout = Runnable {
