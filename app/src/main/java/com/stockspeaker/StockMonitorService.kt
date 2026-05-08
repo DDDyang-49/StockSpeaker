@@ -217,7 +217,7 @@ class StockMonitorService : Service() {
         }
     }
 
-    // ── Youdao TTS: fetch MP3 → play with MediaPlayer ──
+    // ── TTS: Baidu primary, Youdao fallback ──
 
     private fun trySpeak(text: String): Boolean {
         if (isSpeaking) return false
@@ -225,50 +225,65 @@ class StockMonitorService : Service() {
         isSpeaking = true
 
         networkExecutor.execute {
-            try {
-                val encoded = URLEncoder.encode(text, "UTF-8")
-                val url = "https://tts.youdao.com/fanyivoice?word=$encoded&le=zh&keyfrom=speaker-target"
+            // Baidu TTS first (more reliable in China), then Youdao
+            val encoded = URLEncoder.encode(text, "UTF-8")
+            val urls = listOf(
+                "baidu" to "https://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded",
+                "youdao" to "https://tts.youdao.com/fanyivoice?word=$encoded&le=zh"
+            )
 
-                val request = Request.Builder().url(url)
-                    .header("User-Agent", "Mozilla/5.0")
-                    .build()
-                val response = httpClient.newCall(request).execute()
+            var lastError = ""
+            for ((name, url) in urls) {
+                if (!isRunning) break
+                try {
+                    val request = Request.Builder().url(url)
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
+                        .header("Accept", "audio/mpeg,audio/*")
+                        .build()
+                    val response = httpClient.newCall(request).execute()
 
-                if (!response.isSuccessful) {
+                    if (!response.isSuccessful) {
+                        val bodyStr = try {
+                            response.body?.string()?.take(150) ?: ""
+                        } catch (_: Exception) { "" }
+                        lastError = "$name HTTP ${response.code} body:$bodyStr"
+                        response.close()
+                        continue
+                    }
+
+                    val body = response.body
+                    if (body == null) {
+                        lastError = "$name body=null"
+                        continue
+                    }
+
+                    val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
+                    body.byteStream().use { input ->
+                        FileOutputStream(mp3File).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+
+                    if (mp3File.length() < 200) {
+                        mp3File.delete()
+                        lastError = "$name 返回${mp3File.length()}字节(非音频)"
+                        continue
+                    }
+
                     handler.post {
-                        log("⚠ 有道TTS HTTP ${response.code}")
-                        isSpeaking = false
+                        log("✓ TTS: $name")
+                        playAudio(mp3File)
                     }
                     return@execute
+                } catch (e: Exception) {
+                    lastError = "$name 异常: ${e.message?.take(40)}"
                 }
+            }
 
-                val body = response.body ?: run {
-                    handler.post { isSpeaking = false }
-                    return@execute
-                }
-
-                val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
-                body.byteStream().use { input ->
-                    FileOutputStream(mp3File).use { output ->
-                        input.copyTo(output)
-                    }
-                }
-
-                if (mp3File.length() < 100) {
-                    mp3File.delete()
-                    handler.post {
-                        log("⚠ 有道返回数据过短(${mp3File.length()}字节)")
-                        isSpeaking = false
-                    }
-                    return@execute
-                }
-
-                handler.post { playAudio(mp3File) }
-            } catch (e: Exception) {
-                handler.post {
-                    log("⚠ 有道TTS异常: ${e.message?.take(40)}")
-                    isSpeaking = false
-                }
+            // All providers failed
+            handler.post {
+                log("⚠ $lastError")
+                isSpeaking = false
             }
         }
 
