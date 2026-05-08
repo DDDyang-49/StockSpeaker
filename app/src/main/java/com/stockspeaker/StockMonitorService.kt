@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 
 data class ServiceUiState(
     val stockName: String = "",
@@ -55,12 +56,14 @@ class StockMonitorService : Service() {
     private lateinit var configManager: ConfigManager
     private lateinit var handler: Handler
     private var tts: TextToSpeech? = null
+    private var ttsReady = false
     private var isRunning = false
     private var lastSpeakTime = 0L
     private var lastTotalVol = 0
     private var lastChangePct = 0.0
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private var isSpeaking = false
+    private val networkExecutor = Executors.newSingleThreadExecutor()
 
     override fun onCreate() {
         super.onCreate()
@@ -69,18 +72,35 @@ class StockMonitorService : Service() {
 
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                val result = tts?.setLanguage(Locale.SIMPLIFIED_CHINESE)
-                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    tts?.setLanguage(Locale.CHINESE)
+                var result = tts?.setLanguage(Locale.SIMPLIFIED_CHINESE)
+                if (result == TextToSpeech.LANG_MISSING_DATA ||
+                    result == TextToSpeech.LANG_NOT_SUPPORTED
+                ) {
+                    result = tts?.setLanguage(Locale.CHINESE)
                 }
+                ttsReady = (result == TextToSpeech.SUCCESS)
+            }
+            if (!ttsReady) {
+                uiState.value = uiState.value.copy(
+                    statusText = "⚠️ TTS 语音引擎不可用，请检查系统文字转语音设置"
+                )
             }
         }
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) { isSpeaking = false }
+            override fun onDone(utteranceId: String?) {
+                isSpeaking = false
+                handler.removeCallbacks(speakingTimeout)
+            }
             @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) { isSpeaking = false }
-            override fun onError(utteranceId: String?, errorCode: Int) { isSpeaking = false }
+            override fun onError(utteranceId: String?) {
+                isSpeaking = false
+                handler.removeCallbacks(speakingTimeout)
+            }
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                isSpeaking = false
+                handler.removeCallbacks(speakingTimeout)
+            }
         })
 
         createNotificationChannel()
@@ -112,6 +132,9 @@ class StockMonitorService : Service() {
         handler.removeCallbacksAndMessages(null)
         tts?.stop()
         tts?.shutdown()
+        tts = null
+        ttsReady = false
+        networkExecutor.shutdownNow()
         uiState.value = ServiceUiState()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
@@ -120,75 +143,110 @@ class StockMonitorService : Service() {
     private fun runLoop() {
         if (!isRunning) return
 
-        val config = configManager.load()
+        networkExecutor.execute {
+            if (!isRunning) return@execute
 
-        val data = StockFetcher.fetch(config.stockCode, config.largeOrderThreshold)
-        if (data != null) {
-            val currentHand = if (lastTotalVol > 0) maxOf(0, data.totalVol - lastTotalVol) else 0
-            val speed = if (lastChangePct != 0.0) {
-                Math.round((data.changePct - lastChangePct) * 100.0) / 100.0
-            } else 0.0
+            val config = configManager.load()
+            val data = StockFetcher.fetch(config.stockCode, config.largeOrderThreshold)
 
-            lastTotalVol = data.totalVol
-            lastChangePct = data.changePct
+            handler.post {
+                if (!isRunning) return@post
 
-            val now = System.currentTimeMillis()
-            val nowStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(now))
-
-            uiState.value = ServiceUiState(
-                stockName = data.name,
-                price = data.price,
-                changePct = data.changePct,
-                speed = speed,
-                amount = data.amountStr,
-                volRatio = data.volRatio,
-                currentHand = currentHand,
-                largeAsks = data.largeAsks,
-                largeBids = data.largeBids,
-                largeAsksSpeak = data.largeAsksSpeak,
-                largeBidsSpeak = data.largeBidsSpeak,
-                statusText = uiState.value.statusText,
-                isRunning = true,
-                lastSpeakTime = uiState.value.lastSpeakTime
-            )
-
-            if (currentHand >= config.largeOrderThreshold) {
-                val action = when {
-                    speed > 0 -> "主动买入"
-                    speed < 0 -> "抛出"
-                    else -> "成交"
+                if (data != null) {
+                    processStockData(data, config)
+                    updateNotification(data)
                 }
-                intervalLargeEvents.add(Triple(nowStr, action, currentHand))
+                handler.postDelayed({ runLoop() }, 2000)
             }
+        }
+    }
 
-            buildSpeakText(data, config, currentHand, speed)?.let { text ->
-                val interval = config.speakInterval * 1000L
-                if (now - lastSpeakTime >= interval) {
-                    lastSpeakTime = now
+    private fun processStockData(data: StockData, config: AppConfig) {
+        val currentHand = if (lastTotalVol > 0) maxOf(0, data.totalVol - lastTotalVol) else 0
+        val speed = if (lastChangePct != 0.0) {
+            Math.round((data.changePct - lastChangePct) * 100.0) / 100.0
+        } else 0.0
 
-                    var speakText = text
-                    if (intervalLargeEvents.isNotEmpty()) {
-                        val largest = intervalLargeEvents.maxByOrNull { it.third }
-                        if (largest != null) {
-                            speakText += "。期间${largest.first}${largest.second}${largest.third}手。"
-                        }
-                        intervalLargeEvents.clear()
-                    }
+        lastTotalVol = data.totalVol
+        lastChangePct = data.changePct
 
-                    if (!isSpeaking) {
-                        isSpeaking = true
-                        val utteranceId = "s_${now}"
-                        tts?.speak(speakText, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
-                    }
+        val now = System.currentTimeMillis()
+        val nowStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(now))
 
-                    uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
-                }
+        uiState.value = ServiceUiState(
+            stockName = data.name,
+            price = data.price,
+            changePct = data.changePct,
+            speed = speed,
+            amount = data.amountStr,
+            volRatio = data.volRatio,
+            currentHand = currentHand,
+            largeAsks = data.largeAsks,
+            largeBids = data.largeBids,
+            largeAsksSpeak = data.largeAsksSpeak,
+            largeBidsSpeak = data.largeBidsSpeak,
+            statusText = uiState.value.statusText,
+            isRunning = true,
+            lastSpeakTime = uiState.value.lastSpeakTime
+        )
+
+        if (currentHand >= config.largeOrderThreshold) {
+            val action = when {
+                speed > 0 -> "主动买入"
+                speed < 0 -> "抛出"
+                else -> "成交"
             }
-
-            updateNotification(data, currentHand, speed)
+            intervalLargeEvents.add(Triple(nowStr, action, currentHand))
         }
 
-        handler.postDelayed({ runLoop() }, 2000)
+        buildSpeakText(data, config, currentHand, speed)?.let { text ->
+            val interval = config.speakInterval * 1000L
+            if (now - lastSpeakTime >= interval) {
+                lastSpeakTime = now
+
+                var speakText = text
+                if (intervalLargeEvents.isNotEmpty()) {
+                    val largest = intervalLargeEvents.maxByOrNull { it.third }
+                    if (largest != null) {
+                        speakText += "。期间${largest.first}${largest.second}${largest.third}手。"
+                    }
+                    intervalLargeEvents.clear()
+                }
+
+                trySpeak(speakText)
+                uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+            }
+        }
+    }
+
+    private fun trySpeak(text: String) {
+        if (!ttsReady) {
+            uiState.value = uiState.value.copy(
+                statusText = "⏳ TTS 引擎初始化中，即将播报..."
+            )
+            // Retry after 1 second
+            handler.postDelayed({
+                if (isRunning && ttsReady) {
+                    trySpeak(text)
+                }
+            }, 1000)
+            return
+        }
+
+        if (isSpeaking) return
+
+        isSpeaking = true
+        tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "stock_speak")
+
+        // Safety timeout: force reset isSpeaking after 15 seconds
+        handler.postDelayed(speakingTimeout, 15000)
+    }
+
+    private val speakingTimeout = Runnable {
+        if (isSpeaking) {
+            isSpeaking = false
+            tts?.stop()
+        }
     }
 
     private fun buildSpeakText(
@@ -249,14 +307,14 @@ class StockMonitorService : Service() {
         )
         .build()
 
-    private fun updateNotification(data: StockData, currentHand: Int, speed: Double) {
+    private fun updateNotification(data: StockData) {
         val st = when {
             data.changePct > 0 -> "涨"
             data.changePct < 0 -> "跌"
             else -> "平"
         }
         val content =
-            "${data.name} ${data.price} (${st}${Math.abs(data.changePct)}%) | 现手:${currentHand}"
+            "${data.name} ${data.price} (${st}${Math.abs(data.changePct)}%)"
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("摸鱼听盘")
             .setContentText(content)
