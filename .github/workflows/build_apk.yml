@@ -23,20 +23,40 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Extract version from build.gradle.kts
+        id: version
+        run: |
+          VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          IS_BETA=$(echo "$VERSION" | grep -q 'beta' && echo 'true' || echo 'false')
+          echo "is_beta=$IS_BETA" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION (beta=$IS_BETA)"
+
       - name: Setup Gradle and Build
         uses: gradle/gradle-build-action@v3
         with:
           gradle-version: '8.4'
           arguments: assembleDebug
 
+      - name: Rename APK
+        run: |
+          mv app/build/outputs/apk/debug/*.apk "app/build/outputs/apk/debug/摸鱼听盘_v${{ steps.version.outputs.version }}.apk"
+
       - name: List APK
         run: ls -la app/build/outputs/apk/debug/
+
+      - name: Delete existing tag if any
+        run: |
+          git tag -d "v${{ steps.version.outputs.version }}" 2>/dev/null || true
+          git push origin ":refs/tags/v${{ steps.version.outputs.version }}" 2>/dev/null || true
 
       - name: Create Release and Upload APK
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: 摸鱼听盘 APK (build ${{ github.run_number }})
+          tag_name: v${{ steps.version.outputs.version }}
+          name: 摸鱼听盘 v${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.is_beta }}
           files: app/build/outputs/apk/debug/*.apk
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

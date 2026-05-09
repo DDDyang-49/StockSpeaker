@@ -18,6 +18,10 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URLEncoder
@@ -377,32 +381,21 @@ class StockMonitorService : Service() {
         return true
     }
 
-    // ── Network TTS chain: Google → Baidu Fanyi → Baidu → Youdao ──
+    // ── Network TTS: Edge WebSocket (primary) → HTTP fallback (Baidu Fanyi → Baidu → Youdao) ──
 
     private fun tryNetworkTts(text: String) {
-        val encoded = URLEncoder.encode(text, "UTF-8")
+        // Primary: Edge TTS via WebSocket (zh-CN-XiaoxiaoNeural, near-human quality)
+        tryEdgeTtsWs(text) { ok ->
+            if (ok) return@tryEdgeTtsWs
 
-        // 1) Baidu Fanyi TTS (Chinese service, simpler endpoint, no auth)
-        trySimpleTts(
-            "baidu-fanyi", "https://fanyi.baidu.com/gettts?lan=zh&text=$encoded&spd=3",
-            referer = "https://fanyi.baidu.com/"
-        ) { ok ->
-            if (ok) return@trySimpleTts
-
-            // 2) Google Translate TTS (international fallback, simple HTTPS GET)
-            tryGoogleTts(text, encoded) { ok2 ->
-                if (ok2) return@tryGoogleTts
-
-                // 3) Baidu TTS (legacy endpoint)
-                trySimpleTts(
-                    "baidu", "https://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded&cuid=stockspeaker&ctp=1"
-                ) { ok3 ->
-                    if (ok3) return@trySimpleTts
-
-                    // 4) Youdao HTTP
-                    trySimpleTts(
-                        "youdao", "http://tts.youdao.com/fanyivoice?word=$encoded&le=zh"
-                    ) { ok4 ->
+            // Fallback: HTTP TTS chain
+            val encoded = URLEncoder.encode(text, "UTF-8")
+            tryHttpTts("baidu-fanyi", "https://fanyi.baidu.com/gettts?lan=zh&text=$encoded&spd=3",
+                referer = "https://fanyi.baidu.com/") { ok2 ->
+                if (ok2) return@tryHttpTts
+                tryHttpTts("baidu", "https://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded&cuid=stockspeaker&ctp=1") { ok3 ->
+                    if (ok3) return@tryHttpTts
+                    tryHttpTts("youdao", "http://tts.youdao.com/fanyivoice?word=$encoded&le=zh") { ok4 ->
                         if (!ok4) {
                             handler.post {
                                 log("⚠ 全部TTS路径失败")
@@ -415,52 +408,107 @@ class StockMonitorService : Service() {
         }
     }
 
-    private fun tryGoogleTts(text: String, encoded: String, onResult: (Boolean) -> Unit) {
-        try {
-            // Google Translate TTS — free, no auth, returns MP3
-            val url = "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=zh-CN&q=$encoded"
-            val request = Request.Builder().url(url)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-                .header("Accept", "audio/mpeg,audio/*")
-                .build()
+    // ── Edge TTS via WebSocket (wss://speech.platform.bing.com) ──
 
-            val response = httpClient.newCall(request).execute()
-            val ct = response.header("Content-Type", "?")
-            if (!response.isSuccessful) {
-                val bodyStr = try { response.body?.string()?.take(100) ?: "" } catch (_: Exception) { "" }
-                log("  gTTS HTTP${response.code} ct=$ct $bodyStr")
-                response.close()
-                onResult(false)
-                return
-            }
+    private fun tryEdgeTtsWs(text: String, onResult: (Boolean) -> Unit) {
+        val wsRequest = Request.Builder()
+            .url("wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4")
+            .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0")
+            .build()
 
-            val body = response.body
-            if (body == null) { log("  gTTS body=null"); onResult(false); return }
+        val audioChunks = mutableListOf<ByteArray>()
+        var wsRef: WebSocket? = null
+        val safeText = xmlEscape(text)
 
-            val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
-            body.byteStream().use { input ->
-                FileOutputStream(mp3File).use { output -> input.copyTo(output) }
-            }
-
-            log("  gTTS ct=$ct size=${mp3File.length()}")
-            if (mp3File.length() < 200) {
-                mp3File.delete()
-                onResult(false)
-                return
-            }
-
+        val timeoutTask = Runnable {
+            wsRef?.close(1000, "timeout")
             handler.post {
-                log("✓ gTTS(${mp3File.length()}B)")
-                playAudio(mp3File)
+                log("  Edge WS timeout")
+                onResult(false)
             }
-            onResult(true)
-        } catch (e: Exception) {
-            log("  gTTS ${e.message?.take(40)}")
-            onResult(false)
         }
+        handler.postDelayed(timeoutTask, 15000)
+
+        wsRef = httpClient.newWebSocket(wsRequest, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                // Send speech config
+                webSocket.send("Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n" +
+                    """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":false,"wordBoundaryEnabled":true},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}""")
+                // Send SSML
+                webSocket.send("Content-Type:application/ssml+xml; charset=utf-8\r\nPath:ssml\r\n\r\n" +
+                    """<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'><voice name='zh-CN-XiaoxiaoNeural'>$safeText</voice></speak>""")
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (text.contains("turn.end")) {
+                    handler.removeCallbacks(timeoutTask)
+                    webSocket.close(1000, "done")
+                    val totalSize = audioChunks.sumOf { it.size }
+                    if (totalSize < 200) {
+                        handler.post {
+                            log("  Edge WS ${totalSize}B too small")
+                            onResult(false)
+                        }
+                        return
+                    }
+                    val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
+                    try {
+                        FileOutputStream(mp3File).use { out ->
+                            audioChunks.forEach { out.write(it) }
+                        }
+                        handler.post {
+                            log("✓ Edge WS(${mp3File.length()}B)")
+                            playAudio(mp3File)
+                        }
+                    } catch (e: Exception) {
+                        handler.post {
+                            log("  Edge WS save err: ${e.message?.take(30)}")
+                            onResult(false)
+                        }
+                    }
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                val raw = bytes.toByteArray()
+                val audioData = stripHeader(raw)
+                if (audioData.size > 0) audioChunks.add(audioData)
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                handler.removeCallbacks(timeoutTask)
+                handler.post {
+                    log("  Edge WS fail: ${t.message?.take(40)}")
+                    onResult(false)
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                handler.removeCallbacks(timeoutTask)
+            }
+        })
     }
 
-    private fun trySimpleTts(name: String, url: String, referer: String? = null, onResult: (Boolean) -> Unit) {
+    /** Strip WebSocket binary frame headers (Path:audio\r\n...\r\n\r\n<data>) */
+    private fun stripHeader(data: ByteArray): ByteArray {
+        for (i in 0 until data.size - 3) {
+            if (data[i] == 0x0d.toByte() && data[i+1] == 0x0a.toByte() &&
+                data[i+2] == 0x0d.toByte() && data[i+3] == 0x0a.toByte()) {
+                return data.copyOfRange(i + 4, data.size)
+            }
+        }
+        return data
+    }
+
+    private fun xmlEscape(text: String): String = text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+
+    // ── HTTP TTS fallback ──
+
+    private fun tryHttpTts(name: String, url: String, referer: String? = null, onResult: (Boolean) -> Unit) {
         try {
             val ref = referer ?: if (url.contains("baidu")) "https://www.baidu.com/" else "http://www.youdao.com/"
             val request = Request.Builder().url(url)
@@ -470,7 +518,7 @@ class StockMonitorService : Service() {
             val response = httpClient.newCall(request).execute()
 
             if (!response.isSuccessful) {
-                val bodyStr = try { response.body?.string()?.take(100) ?: "" } catch (_: Exception) { "" }
+                val bodyStr = try { response.body?.string()?.take(80) ?: "" } catch (_: Exception) { "" }
                 log("  $name HTTP${response.code} $bodyStr")
                 response.close()
                 onResult(false)
@@ -485,10 +533,9 @@ class StockMonitorService : Service() {
                 FileOutputStream(mp3File).use { output -> input.copyTo(output) }
             }
 
-            val ct = response.header("Content-Type", "?")
             if (mp3File.length() < 200) {
                 mp3File.delete()
-                log("  $name ${mp3File.length()}B ct=$ct")
+                log("  $name ${mp3File.length()}B")
                 onResult(false)
                 return
             }
