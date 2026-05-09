@@ -120,11 +120,7 @@ class StockMonitorService : Service() {
                 tryXiaomiPkgs(0)
             }
         }
-        tts = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            TextToSpeech(this, listener, null, true) // useFallback=true, API 29+
-        } else {
-            TextToSpeech(this, listener)
-        }
+        tts = TextToSpeech(this, listener)
     }
 
     private val xiaomiTtsPkgs = listOf(
