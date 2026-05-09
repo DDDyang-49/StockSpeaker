@@ -16,10 +16,8 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URLEncoder
@@ -367,24 +365,25 @@ class StockMonitorService : Service() {
         return true
     }
 
-    // ── Network TTS chain: Edge (HTTPS/free) → Baidu HTTPS → Baidu HTTP → Youdao ──
+    // ── Network TTS chain: Google → Baidu Fanyi → Baidu → Youdao ──
 
     private fun tryNetworkTts(text: String) {
         val encoded = URLEncoder.encode(text, "UTF-8")
 
-        // 1) Microsoft Edge TTS (HTTPS, free, best chance on HyperOS)
-        tryEdgeTts(text) { ok ->
-            if (ok) return@tryEdgeTts
+        // 1) Baidu Fanyi TTS (Chinese service, simpler endpoint, no auth)
+        trySimpleTts(
+            "baidu-fanyi", "https://fanyi.baidu.com/gettts?lan=zh&text=$encoded&spd=3",
+            referer = "https://fanyi.baidu.com/"
+        ) { ok ->
+            if (ok) return@trySimpleTts
 
-            // 2) Baidu HTTPS
-            trySimpleTts(
-                "baidu-https", "https://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded"
-            ) { ok2 ->
-                if (ok2) return@trySimpleTts
+            // 2) Google Translate TTS (international fallback, simple HTTPS GET)
+            tryGoogleTts(text, encoded) { ok2 ->
+                if (ok2) return@tryGoogleTts
 
-                // 3) Baidu HTTP
+                // 3) Baidu TTS (legacy endpoint)
                 trySimpleTts(
-                    "baidu-http", "http://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded"
+                    "baidu", "https://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded&cuid=stockspeaker&ctp=1"
                 ) { ok3 ->
                     if (ok3) return@trySimpleTts
 
@@ -404,61 +403,57 @@ class StockMonitorService : Service() {
         }
     }
 
-    private fun tryEdgeTts(text: String, onResult: (Boolean) -> Unit) {
+    private fun tryGoogleTts(text: String, encoded: String, onResult: (Boolean) -> Unit) {
         try {
-            val ssml = """<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>
-                <voice name='zh-CN-XiaoxiaoNeural'>$text</voice>
-            </speak>""".trimIndent()
-
-            val request = Request.Builder()
-                .url("https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4")
-                .header("Content-Type", "application/ssml+xml")
-                .header("X-Microsoft-OutputFormat", "audio-24khz-48kbitrate-mono-mp3")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                .header("Origin", "https://www.bing.com")
-                .post(ssml.toRequestBody("application/ssml+xml".toMediaType()))
+            // Google Translate TTS — free, no auth, returns MP3
+            val url = "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=zh-CN&q=$encoded"
+            val request = Request.Builder().url(url)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                .header("Accept", "audio/mpeg,audio/*")
                 .build()
 
             val response = httpClient.newCall(request).execute()
+            val ct = response.header("Content-Type", "?")
             if (!response.isSuccessful) {
                 val bodyStr = try { response.body?.string()?.take(100) ?: "" } catch (_: Exception) { "" }
-                log("  Edge HTTP${response.code} $bodyStr")
+                log("  gTTS HTTP${response.code} ct=$ct $bodyStr")
                 response.close()
                 onResult(false)
                 return
             }
 
             val body = response.body
-            if (body == null) { log("  Edge body=null"); onResult(false); return }
+            if (body == null) { log("  gTTS body=null"); onResult(false); return }
 
             val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
             body.byteStream().use { input ->
                 FileOutputStream(mp3File).use { output -> input.copyTo(output) }
             }
 
+            log("  gTTS ct=$ct size=${mp3File.length()}")
             if (mp3File.length() < 200) {
                 mp3File.delete()
-                log("  Edge ${mp3File.length()}B")
                 onResult(false)
                 return
             }
 
             handler.post {
-                log("✓ Edge TTS(${mp3File.length()}B)")
+                log("✓ gTTS(${mp3File.length()}B)")
                 playAudio(mp3File)
             }
             onResult(true)
         } catch (e: Exception) {
-            log("  Edge ${e.message?.take(40)}")
+            log("  gTTS ${e.message?.take(40)}")
             onResult(false)
         }
     }
 
-    private fun trySimpleTts(name: String, url: String, onResult: (Boolean) -> Unit) {
+    private fun trySimpleTts(name: String, url: String, referer: String? = null, onResult: (Boolean) -> Unit) {
         try {
+            val ref = referer ?: if (url.contains("baidu")) "https://www.baidu.com/" else "http://www.youdao.com/"
             val request = Request.Builder().url(url)
                 .header("User-Agent", "Mozilla/5.0")
-                .header("Referer", if (url.contains("baidu")) "https://www.baidu.com/" else "http://www.youdao.com/")
+                .header("Referer", ref)
                 .build()
             val response = httpClient.newCall(request).execute()
 
@@ -478,9 +473,10 @@ class StockMonitorService : Service() {
                 FileOutputStream(mp3File).use { output -> input.copyTo(output) }
             }
 
+            val ct = response.header("Content-Type", "?")
             if (mp3File.length() < 200) {
                 mp3File.delete()
-                log("  $name ${mp3File.length()}B")
+                log("  $name ${mp3File.length()}B ct=$ct")
                 onResult(false)
                 return
             }
