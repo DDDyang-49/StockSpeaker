@@ -16,10 +16,10 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
-import okhttp3.MediaType
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URLEncoder
@@ -370,28 +370,29 @@ class StockMonitorService : Service() {
     // ── Network TTS chain: Edge (HTTPS/free) → Baidu HTTPS → Baidu HTTP → Youdao ──
 
     private fun tryNetworkTts(text: String) {
+        val encoded = URLEncoder.encode(text, "UTF-8")
+
         // 1) Microsoft Edge TTS (HTTPS, free, best chance on HyperOS)
-        tryEdgeTts(text) { success ->
-            if (success) return@tryNetworkTts
+        tryEdgeTts(text) { ok ->
+            if (ok) return@tryEdgeTts
 
             // 2) Baidu HTTPS
-            val encoded = URLEncoder.encode(text, "UTF-8")
             trySimpleTts(
                 "baidu-https", "https://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded"
-            ) { ok ->
-                if (ok) return@tryNetworkTts
+            ) { ok2 ->
+                if (ok2) return@trySimpleTts
 
                 // 3) Baidu HTTP
                 trySimpleTts(
                     "baidu-http", "http://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded"
-                ) { ok ->
-                    if (ok) return@tryNetworkTts
+                ) { ok3 ->
+                    if (ok3) return@trySimpleTts
 
                     // 4) Youdao HTTP
                     trySimpleTts(
                         "youdao", "http://tts.youdao.com/fanyivoice?word=$encoded&le=zh"
-                    ) { ok ->
-                        if (!ok) {
+                    ) { ok4 ->
+                        if (!ok4) {
                             handler.post {
                                 log("⚠ 全部TTS路径失败")
                                 isSpeaking = false
@@ -415,7 +416,7 @@ class StockMonitorService : Service() {
                 .header("X-Microsoft-OutputFormat", "audio-24khz-48kbitrate-mono-mp3")
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 .header("Origin", "https://www.bing.com")
-                .post(RequestBody.create(MediaType.parse("application/ssml+xml"), ssml))
+                .post(ssml.toRequestBody("application/ssml+xml".toMediaType()))
                 .build()
 
             val response = httpClient.newCall(request).execute()
