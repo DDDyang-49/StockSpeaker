@@ -12,7 +12,11 @@ data class AppConfig(
     val speakAmount: Boolean = true,
     val speakVolRatio: Boolean = true,
     val speakSpeed: Boolean = false,
-    val speakLargeOrders: Boolean = true
+    val speakLargeOrders: Boolean = true,
+    // AI 配置
+    val aiEnabled: Boolean = false,
+    val aiApiKey: String = "",
+    val aiSummaryInterval: Int = 5
 )
 
 class ConfigManager(context: Context) {
@@ -29,7 +33,10 @@ class ConfigManager(context: Context) {
             speakAmount = prefs.getBoolean("speak_amount", true),
             speakVolRatio = prefs.getBoolean("speak_vol_ratio", true),
             speakSpeed = prefs.getBoolean("speak_speed", false),
-            speakLargeOrders = prefs.getBoolean("speak_large_orders", true)
+            speakLargeOrders = prefs.getBoolean("speak_large_orders", true),
+            aiEnabled = prefs.getBoolean("ai_enabled", false),
+            aiApiKey = prefs.getString("ai_api_key", "") ?: "",
+            aiSummaryInterval = prefs.getInt("ai_summary_interval", 5)
         )
     }
 
@@ -45,6 +52,9 @@ class ConfigManager(context: Context) {
             .putBoolean("speak_vol_ratio", config.speakVolRatio)
             .putBoolean("speak_speed", config.speakSpeed)
             .putBoolean("speak_large_orders", config.speakLargeOrders)
+            .putBoolean("ai_enabled", config.aiEnabled)
+            .putString("ai_api_key", config.aiApiKey)
+            .putInt("ai_summary_interval", config.aiSummaryInterval)
             .apply()
     }
 }

@@ -88,6 +88,9 @@ class StockMonitorService : Service() {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    // AI analyzer
+    private lateinit var aiAnalyzer: AIAnalyzer
+
     // Diagnostic log buffer
     private val debugLogs = mutableListOf<String>()
 
@@ -107,6 +110,10 @@ class StockMonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         configManager = ConfigManager(this)
+        aiAnalyzer = AIAnalyzer {
+            val c = configManager.load()
+            AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, summaryInterval = c.aiSummaryInterval)
+        }
         handler = Handler(Looper.getMainLooper())
         createNotificationChannel()
         initSystemTts() // Try system TTS first (offline/no-filter)
@@ -266,6 +273,7 @@ class StockMonitorService : Service() {
         ttsReady = false
         mediaPlayer?.release()
         mediaPlayer = null
+        aiAnalyzer.shutdown()
         networkExecutor.shutdownNow()
         try {
             cacheDir.listFiles()?.filter { it.name.startsWith("speak_") }?.forEach { it.delete() }
@@ -339,6 +347,43 @@ class StockMonitorService : Service() {
                 if (trySpeak(text)) {
                     intervalLargeEvents.clear()
                     uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+                    // 每次成功播报后触发 AI 总结检查
+                    tryGenerateAiSummary()
+                }
+            }
+        }
+
+        // ── AI 异动检测（每次轮询都跑，不等播报间隔） ──
+        try {
+            val snapshot = MarketSnapshot(
+                time = now,
+                price = data.price,
+                changePct = data.changePct,
+                speed = speed,
+                volRatio = data.volRatio,
+                amountStr = data.amountStr,
+                currentHand = currentHand,
+                largeAsksCount = data.largeAsksSpeak.size,
+                largeBidsCount = data.largeBidsSpeak.size
+            )
+            val patterns = aiAnalyzer.feed(snapshot)
+            if (patterns.isNotEmpty() && !isSpeaking) {
+                val patternText = patterns.joinToString("") { it.speakText }
+                log("AI异动: ${patterns.map { it.type.name }.joinToString()}")
+                trySpeak(patternText)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun tryGenerateAiSummary() {
+        if (!aiAnalyzer.shouldGenerateSummary()) return
+        aiAnalyzer.generateSummary { summary ->
+            if (summary != null) {
+                handler.post {
+                    if (isRunning && !isSpeaking) {
+                        log("AI总结: ${summary.take(30)}...")
+                        trySpeak("AI盘面总结：$summary")
+                    }
                 }
             }
         }

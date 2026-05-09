@@ -110,6 +110,9 @@ fun StockSpeakerApp(configManager: ConfigManager, versionName: String) {
     var speakVolRatio by remember { mutableStateOf(initialConfig.speakVolRatio) }
     var speakCurrentHand by remember { mutableStateOf(initialConfig.speakCurrentHand) }
     var speakLargeOrders by remember { mutableStateOf(initialConfig.speakLargeOrders) }
+    var aiEnabled by remember { mutableStateOf(initialConfig.aiEnabled) }
+    var aiApiKey by remember { mutableStateOf(initialConfig.aiApiKey) }
+    var aiSummaryInterval by remember { mutableStateOf(initialConfig.aiSummaryInterval.toString()) }
 
     val uiState by StockMonitorService.uiState.collectAsState()
 
@@ -242,6 +245,81 @@ fun StockSpeakerApp(configManager: ConfigManager, versionName: String) {
                 }
             }
 
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // ---- AI 辅助卡片 ----
+            Card(
+                shape = shape,
+                colors = CardDefaults.cardColors(containerColor = AppColors.cardBackground),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    SectionTitle("AI 辅助")
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // API Key 输入
+                    var showKey by remember { mutableStateOf(false) }
+                    OutlinedTextField(
+                        value = aiApiKey,
+                        onValueChange = { aiApiKey = it },
+                        label = { Text("DeepSeek API Key") },
+                        enabled = controlsEnabled,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = fieldColors(),
+                        trailingIcon = {
+                            TextButton(onClick = { showKey = !showKey }) {
+                                Text(if (showKey) "隐藏" else "显示", fontSize = 12.sp)
+                            }
+                        },
+                        visualTransformation = if (showKey) androidx.compose.ui.text.input.VisualTransformation.None
+                            else androidx.compose.ui.text.input.PasswordVisualTransformation()
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // 开关 + 间隔
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = aiEnabled,
+                                onCheckedChange = { aiEnabled = it },
+                                enabled = controlsEnabled,
+                                colors = CheckboxDefaults.colors(
+                                    checkedColor = MaterialTheme.colorScheme.primary,
+                                    uncheckedColor = MaterialTheme.colorScheme.outline
+                                )
+                            )
+                            Text("启用 AI 盘面总结", fontSize = 14.sp)
+                        }
+
+                        if (aiEnabled) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("每", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                OutlinedTextField(
+                                    value = aiSummaryInterval,
+                                    onValueChange = { aiSummaryInterval = it },
+                                    modifier = Modifier.width(56.dp),
+                                    singleLine = true,
+                                    textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center),
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("次播报", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(16.dp))
 
             // ---- 主按钮 ----
@@ -262,7 +340,10 @@ fun StockSpeakerApp(configManager: ConfigManager, versionName: String) {
                                 speakAmount = speakAmount,
                                 speakVolRatio = speakVolRatio,
                                 speakCurrentHand = speakCurrentHand,
-                                speakLargeOrders = speakLargeOrders
+                                speakLargeOrders = speakLargeOrders,
+                                aiEnabled = aiEnabled,
+                                aiApiKey = aiApiKey.trim(),
+                                aiSummaryInterval = aiSummaryInterval.toIntOrNull() ?: 5
                             )
                         )
                         StockMonitorService.start(context)
