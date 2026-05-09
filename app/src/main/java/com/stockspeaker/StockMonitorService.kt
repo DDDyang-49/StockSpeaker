@@ -8,9 +8,12 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import okhttp3.OkHttpClient
@@ -62,6 +65,8 @@ class StockMonitorService : Service() {
 
     private lateinit var configManager: ConfigManager
     private lateinit var handler: Handler
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
     private var mediaPlayer: MediaPlayer? = null
     private var isRunning = false
     private var lastSpeakTime = 0L
@@ -71,7 +76,7 @@ class StockMonitorService : Service() {
     private var isSpeaking = false
     private val networkExecutor = Executors.newSingleThreadExecutor()
 
-    // HTTP client for Youdao TTS API
+    // HTTP client for network TTS fallback
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -98,7 +103,109 @@ class StockMonitorService : Service() {
         configManager = ConfigManager(this)
         handler = Handler(Looper.getMainLooper())
         createNotificationChannel()
-        log("✓ 语音引擎: 有道TTS (网络)")
+        initSystemTts() // Try system TTS first (offline/no-filter)
+    }
+
+    // ── System TTS init chain ──
+
+    private var xiaomiPkgIdx = -1 // track which Xiaomi package we're on (-1 = not in Xiaomi loop)
+
+    private fun initSystemTts() {
+        log("TTS: 尝试系统引擎...")
+        val listener = TextToSpeech.OnInitListener { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                onTtsConnected(fromXiaomi = false)
+            } else {
+                log("✗ 默认引擎 init失败 status=$status")
+                tryXiaomiPkgs(0)
+            }
+        }
+        tts = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            TextToSpeech(this, listener, null, true) // useFallback=true, API 29+
+        } else {
+            TextToSpeech(this, listener)
+        }
+    }
+
+    private val xiaomiTtsPkgs = listOf(
+        "com.miui.voiceassist",
+        "com.xiaomi.mibrain.speech",
+        "com.miui.tts",
+        "com.xiaomi.voice.engine"
+    )
+
+    private fun tryXiaomiPkgs(index: Int) {
+        if (index >= xiaomiTtsPkgs.size) {
+            log("✗ 所有系统引擎均失败，降级为网络TTS")
+            xiaomiPkgIdx = -1
+            return
+        }
+        xiaomiPkgIdx = index
+        val pkg = xiaomiTtsPkgs[index]
+        log("TTS: 尝试 $pkg")
+        tts?.shutdown()
+        tts = TextToSpeech(this, { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                onTtsConnected(fromXiaomi = true)
+            } else {
+                log("✗ $pkg 失败")
+                tryXiaomiPkgs(index + 1)
+            }
+        }, pkg)
+    }
+
+    private fun onTtsConnected(fromXiaomi: Boolean) {
+        val engine = tts?.defaultEngine ?: "?"
+        log("TTS连接: $engine")
+
+        var ok = false
+        for (loc in listOf(Locale.SIMPLIFIED_CHINESE, Locale.CHINESE, Locale.getDefault())) {
+            val r = tts?.setLanguage(loc) ?: TextToSpeech.ERROR
+            val desc = when (r) {
+                TextToSpeech.SUCCESS -> "SUCCESS"
+                TextToSpeech.LANG_MISSING_DATA -> "MISSING_DATA"
+                TextToSpeech.LANG_NOT_SUPPORTED -> "NOT_SUPPORTED"
+                else -> "code=$r"
+            }
+            log("  setLanguage($loc) → $desc")
+            if (r == TextToSpeech.SUCCESS) { ok = true; break }
+        }
+
+        if (ok) {
+            tts?.setSpeechRate(0.9f)
+            tts?.setOnUtteranceProgressListener(ttsListener)
+            ttsReady = true
+            xiaomiPkgIdx = -1
+            log("✓ 系统TTS就绪 引擎=$engine")
+        } else {
+            log("✗ $engine 不支持中文")
+            tts?.shutdown()
+            tts = null
+            if (fromXiaomi) {
+                tryXiaomiPkgs(xiaomiPkgIdx + 1) // continue from next
+            } else {
+                tryXiaomiPkgs(0) // start Xiaomi loop
+            }
+        }
+    }
+
+    private val ttsListener = object : UtteranceProgressListener() {
+        override fun onStart(id: String?) { isSpeaking = true }
+        override fun onDone(id: String?) {
+            isSpeaking = false
+            handler.removeCallbacks(speakingTimeout)
+        }
+        @Deprecated("Deprecated in Java")
+        override fun onError(id: String?) {
+            isSpeaking = false
+            handler.removeCallbacks(speakingTimeout)
+            log("⚠ TTS onError")
+        }
+        override fun onError(id: String?, code: Int) {
+            isSpeaking = false
+            handler.removeCallbacks(speakingTimeout)
+            log("⚠ TTS onError code=$code")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -113,7 +220,8 @@ class StockMonitorService : Service() {
             startForeground(NOTIFICATION_ID, buildNotification(config.stockCode))
             val existing = uiState.value
             uiState.value = existing.copy(
-                statusText = "🟢 正在监控: ${config.stockCode}...",
+                statusText = if (ttsReady) "🟢 正在监控: ${config.stockCode}..."
+                             else "🟢 监控中(TTS未就绪): ${config.stockCode}...",
                 isRunning = true,
                 debugLog = debugLogs.toList()
             )
@@ -127,10 +235,13 @@ class StockMonitorService : Service() {
     override fun onDestroy() {
         isRunning = false
         handler.removeCallbacksAndMessages(null)
+        tts?.stop()
+        tts?.shutdown()
+        tts = null
+        ttsReady = false
         mediaPlayer?.release()
         mediaPlayer = null
         networkExecutor.shutdownNow()
-        // Clean up temp MP3 files
         try {
             cacheDir.listFiles()?.filter { it.name.startsWith("speak_") }?.forEach { it.delete() }
         } catch (_: Exception) {}
@@ -217,16 +328,28 @@ class StockMonitorService : Service() {
         }
     }
 
-    // ── TTS: HTTP Baidu → HTTP Youdao → Xiaomi system engine ──
+    // ── TTS speak: system TTS first, network fallback ──
 
     private fun trySpeak(text: String): Boolean {
         if (isSpeaking) return false
 
-        isSpeaking = true
+        // System TTS available → use it
+        if (ttsReady) {
+            isSpeaking = true
+            val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "stock_speak")
+                ?: TextToSpeech.ERROR
+            if (result == TextToSpeech.SUCCESS) {
+                handler.postDelayed(speakingTimeout, 15000)
+                return true
+            }
+            isSpeaking = false
+            log("⚠ system TTS speak失败($result)")
+        }
 
+        // Fall through to network TTS
+        isSpeaking = true
         networkExecutor.execute {
             val encoded = URLEncoder.encode(text, "UTF-8")
-            // HTTP URLs to bypass SSL interception on HyperOS
             val urls = listOf(
                 "baidu" to "http://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded",
                 "baidu2" to "http://tsn.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded",
@@ -244,39 +367,36 @@ class StockMonitorService : Service() {
                     val response = httpClient.newCall(request).execute()
 
                     if (!response.isSuccessful) {
-                        val bodyStr = try { response.body?.string()?.take(200) ?: "" } catch (_: Exception) { "" }
-                        lastError = "$name HTTP ${response.code} body:$bodyStr"
+                        val bodyStr = try { response.body?.string()?.take(100) ?: "" } catch (_: Exception) { "" }
+                        lastError = "$name HTTP${response.code} $bodyStr"
                         response.close()
                         continue
                     }
 
-                    val contentType = response.header("Content-Type") ?: ""
                     val body = response.body
                     if (body == null) { lastError = "$name body=null"; continue }
 
-                    val ext = if (contentType.contains("mp3") || contentType.contains("mpeg")) "mp3" else "mp3"
-                    val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.$ext")
+                    val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
                     body.byteStream().use { input ->
                         FileOutputStream(mp3File).use { output -> input.copyTo(output) }
                     }
 
                     if (mp3File.length() < 200) {
                         mp3File.delete()
-                        lastError = "$name 返回${mp3File.length()}B ct=$contentType"
+                        lastError = "$name ${mp3File.length()}B"
                         continue
                     }
 
                     handler.post {
-                        log("✓ TTS: $name (${mp3File.length()}B)")
+                        log("✓ net:$name(${mp3File.length()}B)")
                         playAudio(mp3File)
                     }
                     return@execute
                 } catch (e: Exception) {
-                    lastError = "$name ${e.message?.take(50)}"
+                    lastError = "$name ${e.message?.take(40)}"
                 }
             }
 
-            // All HTTP providers failed
             handler.post {
                 log("⚠ $lastError")
                 isSpeaking = false
@@ -328,6 +448,7 @@ class StockMonitorService : Service() {
         if (isSpeaking) {
             isSpeaking = false
             try {
+                tts?.stop()
                 mediaPlayer?.stop()
                 mediaPlayer?.release()
             } catch (_: Exception) {}
