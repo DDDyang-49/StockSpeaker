@@ -217,7 +217,7 @@ class StockMonitorService : Service() {
         }
     }
 
-    // ── TTS: Baidu primary, Youdao fallback ──
+    // ── TTS: HTTP Baidu → HTTP Youdao → Xiaomi system engine ──
 
     private fun trySpeak(text: String): Boolean {
         if (isSpeaking) return false
@@ -225,11 +225,12 @@ class StockMonitorService : Service() {
         isSpeaking = true
 
         networkExecutor.execute {
-            // Baidu TTS first (more reliable in China), then Youdao
             val encoded = URLEncoder.encode(text, "UTF-8")
+            // HTTP URLs to bypass SSL interception on HyperOS
             val urls = listOf(
-                "baidu" to "https://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded",
-                "youdao" to "https://tts.youdao.com/fanyivoice?word=$encoded&le=zh"
+                "baidu" to "http://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded",
+                "baidu2" to "http://tsn.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded",
+                "youdao" to "http://tts.youdao.com/fanyivoice?word=$encoded&le=zh"
             )
 
             var lastError = ""
@@ -237,50 +238,45 @@ class StockMonitorService : Service() {
                 if (!isRunning) break
                 try {
                     val request = Request.Builder().url(url)
-                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14)")
-                        .header("Accept", "audio/mpeg,audio/*")
+                        .header("User-Agent", "Mozilla/5.0")
+                        .header("Referer", "http://www.baidu.com/")
                         .build()
                     val response = httpClient.newCall(request).execute()
 
                     if (!response.isSuccessful) {
-                        val bodyStr = try {
-                            response.body?.string()?.take(150) ?: ""
-                        } catch (_: Exception) { "" }
+                        val bodyStr = try { response.body?.string()?.take(200) ?: "" } catch (_: Exception) { "" }
                         lastError = "$name HTTP ${response.code} body:$bodyStr"
                         response.close()
                         continue
                     }
 
+                    val contentType = response.header("Content-Type") ?: ""
                     val body = response.body
-                    if (body == null) {
-                        lastError = "$name body=null"
-                        continue
-                    }
+                    if (body == null) { lastError = "$name body=null"; continue }
 
-                    val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
+                    val ext = if (contentType.contains("mp3") || contentType.contains("mpeg")) "mp3" else "mp3"
+                    val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.$ext")
                     body.byteStream().use { input ->
-                        FileOutputStream(mp3File).use { output ->
-                            input.copyTo(output)
-                        }
+                        FileOutputStream(mp3File).use { output -> input.copyTo(output) }
                     }
 
                     if (mp3File.length() < 200) {
                         mp3File.delete()
-                        lastError = "$name 返回${mp3File.length()}字节(非音频)"
+                        lastError = "$name 返回${mp3File.length()}B ct=$contentType"
                         continue
                     }
 
                     handler.post {
-                        log("✓ TTS: $name")
+                        log("✓ TTS: $name (${mp3File.length()}B)")
                         playAudio(mp3File)
                     }
                     return@execute
                 } catch (e: Exception) {
-                    lastError = "$name 异常: ${e.message?.take(40)}"
+                    lastError = "$name ${e.message?.take(50)}"
                 }
             }
 
-            // All providers failed
+            // All HTTP providers failed
             handler.post {
                 log("⚠ $lastError")
                 isSpeaking = false
