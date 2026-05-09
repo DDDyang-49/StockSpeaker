@@ -573,8 +573,7 @@ private fun StatusBar(uiState: ServiceUiState) {
                         color = Color(0xFF616161)
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    // Show last 12 lines
-                    val lines = uiState.debugLog.takeLast(12)
+                    val lines = uiState.debugLog.takeLast(20)
                     Text(
                         text = lines.joinToString("\n"),
                         fontSize = 10.sp,

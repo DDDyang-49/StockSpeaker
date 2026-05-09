@@ -16,8 +16,10 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
+import okhttp3.MediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URLEncoder
@@ -146,7 +148,10 @@ class StockMonitorService : Service() {
 
     private fun tryAllPkgs(index: Int) {
         if (index >= allTtsPkgs.size) {
-            log("✗ 已尝试全部${allTtsPkgs.size}个引擎，均失败 → 降级网络TTS")
+            val defaultSynth = try {
+                Settings.Secure.getString(contentResolver, "tts_default_synth")
+            } catch (_: Exception) { null }
+            log("✗ 全部${allTtsPkgs.size}引擎失败 系统默认=$defaultSynth → 网络TTS")
             xiaomiPkgIdx = -1
             return
         }
@@ -358,62 +363,136 @@ class StockMonitorService : Service() {
 
         // Fall through to network TTS
         isSpeaking = true
-        networkExecutor.execute {
+        networkExecutor.execute { tryNetworkTts(text) }
+        return true
+    }
+
+    // ── Network TTS chain: Edge (HTTPS/free) → Baidu HTTPS → Baidu HTTP → Youdao ──
+
+    private fun tryNetworkTts(text: String) {
+        // 1) Microsoft Edge TTS (HTTPS, free, best chance on HyperOS)
+        tryEdgeTts(text) { success ->
+            if (success) return@tryNetworkTts
+
+            // 2) Baidu HTTPS
             val encoded = URLEncoder.encode(text, "UTF-8")
-            val urls = listOf(
-                "baidu" to "http://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded",
-                "baidu2" to "http://tsn.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded",
-                "youdao" to "http://tts.youdao.com/fanyivoice?word=$encoded&le=zh"
-            )
+            trySimpleTts(
+                "baidu-https", "https://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded"
+            ) { ok ->
+                if (ok) return@tryNetworkTts
 
-            var lastError = ""
-            for ((name, url) in urls) {
-                if (!isRunning) break
-                try {
-                    val request = Request.Builder().url(url)
-                        .header("User-Agent", "Mozilla/5.0")
-                        .header("Referer", "http://www.baidu.com/")
-                        .build()
-                    val response = httpClient.newCall(request).execute()
+                // 3) Baidu HTTP
+                trySimpleTts(
+                    "baidu-http", "http://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded"
+                ) { ok ->
+                    if (ok) return@tryNetworkTts
 
-                    if (!response.isSuccessful) {
-                        val bodyStr = try { response.body?.string()?.take(100) ?: "" } catch (_: Exception) { "" }
-                        lastError = "$name HTTP${response.code} $bodyStr"
-                        response.close()
-                        continue
+                    // 4) Youdao HTTP
+                    trySimpleTts(
+                        "youdao", "http://tts.youdao.com/fanyivoice?word=$encoded&le=zh"
+                    ) { ok ->
+                        if (!ok) {
+                            handler.post {
+                                log("⚠ 全部TTS路径失败")
+                                isSpeaking = false
+                            }
+                        }
                     }
-
-                    val body = response.body
-                    if (body == null) { lastError = "$name body=null"; continue }
-
-                    val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
-                    body.byteStream().use { input ->
-                        FileOutputStream(mp3File).use { output -> input.copyTo(output) }
-                    }
-
-                    if (mp3File.length() < 200) {
-                        mp3File.delete()
-                        lastError = "$name ${mp3File.length()}B"
-                        continue
-                    }
-
-                    handler.post {
-                        log("✓ net:$name(${mp3File.length()}B)")
-                        playAudio(mp3File)
-                    }
-                    return@execute
-                } catch (e: Exception) {
-                    lastError = "$name ${e.message?.take(40)}"
                 }
+            }
+        }
+    }
+
+    private fun tryEdgeTts(text: String, onResult: (Boolean) -> Unit) {
+        try {
+            val ssml = """<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>
+                <voice name='zh-CN-XiaoxiaoNeural'>$text</voice>
+            </speak>""".trimIndent()
+
+            val request = Request.Builder()
+                .url("https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4")
+                .header("Content-Type", "application/ssml+xml")
+                .header("X-Microsoft-OutputFormat", "audio-24khz-48kbitrate-mono-mp3")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("Origin", "https://www.bing.com")
+                .post(RequestBody.create(MediaType.parse("application/ssml+xml"), ssml))
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                val bodyStr = try { response.body?.string()?.take(100) ?: "" } catch (_: Exception) { "" }
+                log("  Edge HTTP${response.code} $bodyStr")
+                response.close()
+                onResult(false)
+                return
+            }
+
+            val body = response.body
+            if (body == null) { log("  Edge body=null"); onResult(false); return }
+
+            val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
+            body.byteStream().use { input ->
+                FileOutputStream(mp3File).use { output -> input.copyTo(output) }
+            }
+
+            if (mp3File.length() < 200) {
+                mp3File.delete()
+                log("  Edge ${mp3File.length()}B")
+                onResult(false)
+                return
             }
 
             handler.post {
-                log("⚠ $lastError")
-                isSpeaking = false
+                log("✓ Edge TTS(${mp3File.length()}B)")
+                playAudio(mp3File)
             }
+            onResult(true)
+        } catch (e: Exception) {
+            log("  Edge ${e.message?.take(40)}")
+            onResult(false)
         }
+    }
 
-        return true
+    private fun trySimpleTts(name: String, url: String, onResult: (Boolean) -> Unit) {
+        try {
+            val request = Request.Builder().url(url)
+                .header("User-Agent", "Mozilla/5.0")
+                .header("Referer", if (url.contains("baidu")) "https://www.baidu.com/" else "http://www.youdao.com/")
+                .build()
+            val response = httpClient.newCall(request).execute()
+
+            if (!response.isSuccessful) {
+                val bodyStr = try { response.body?.string()?.take(100) ?: "" } catch (_: Exception) { "" }
+                log("  $name HTTP${response.code} $bodyStr")
+                response.close()
+                onResult(false)
+                return
+            }
+
+            val body = response.body
+            if (body == null) { log("  $name body=null"); onResult(false); return }
+
+            val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
+            body.byteStream().use { input ->
+                FileOutputStream(mp3File).use { output -> input.copyTo(output) }
+            }
+
+            if (mp3File.length() < 200) {
+                mp3File.delete()
+                log("  $name ${mp3File.length()}B")
+                onResult(false)
+                return
+            }
+
+            handler.post {
+                log("✓ $name(${mp3File.length()}B)")
+                playAudio(mp3File)
+            }
+            onResult(true)
+        } catch (e: Exception) {
+            log("  $name ${e.message?.take(40)}")
+            onResult(false)
+        }
     }
 
     private fun playAudio(file: File) {
