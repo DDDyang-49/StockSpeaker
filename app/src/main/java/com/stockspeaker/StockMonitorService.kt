@@ -8,10 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
-import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.NotificationCompat
@@ -111,41 +111,55 @@ class StockMonitorService : Service() {
     private var xiaomiPkgIdx = -1 // track which Xiaomi package we're on (-1 = not in Xiaomi loop)
 
     private fun initSystemTts() {
-        log("TTS: 尝试系统引擎...")
+        // Read the actual default TTS engine from system settings
+        val defaultSynth = try {
+            Settings.Secure.getString(contentResolver, "tts_default_synth")
+        } catch (_: Exception) { null }
+        log("TTS: 系统默认引擎=${defaultSynth ?: "未设置"}")
+
         val listener = TextToSpeech.OnInitListener { status ->
             if (status == TextToSpeech.SUCCESS) {
                 onTtsConnected(fromXiaomi = false)
             } else {
                 log("✗ 默认引擎 init失败 status=$status")
-                tryXiaomiPkgs(0)
+                tryAllPkgs(0)
             }
         }
         tts = TextToSpeech(this, listener)
     }
 
-    private val xiaomiTtsPkgs = listOf(
-        "com.miui.voiceassist",
-        "com.xiaomi.mibrain.speech",
-        "com.miui.tts",
-        "com.xiaomi.voice.engine"
+    // Common TTS engine packages on Chinese Android devices
+    private val allTtsPkgs = listOf(
+        "com.iflytek.tts",           // iFlytek (讯飞) — most common
+        "com.iflytek.speechsuite",   // iFlytek Speech Suite
+        "com.iflytek.speechcloud",   // iFlytek Speech Cloud
+        "com.google.android.tts",    // Google TTS
+        "com.baidu.tts",             // Baidu TTS
+        "com.baidu.speech",          // Baidu Speech
+        "com.miui.voiceassist",      // XiaoAi
+        "com.xiaomi.mibrain.speech", // XiaoAi Brain
+        "com.miui.tts",              // MIUI TTS
+        "com.xiaomi.voice.engine",   // Xiaomi Voice Engine
+        "com.svox.pico",             // Pico TTS (AOSP)
+        "com.android.tts"            // AOSP TTS
     )
 
-    private fun tryXiaomiPkgs(index: Int) {
-        if (index >= xiaomiTtsPkgs.size) {
-            log("✗ 所有系统引擎均失败，降级为网络TTS")
+    private fun tryAllPkgs(index: Int) {
+        if (index >= allTtsPkgs.size) {
+            log("✗ 已尝试全部${allTtsPkgs.size}个引擎，均失败 → 降级网络TTS")
             xiaomiPkgIdx = -1
             return
         }
         xiaomiPkgIdx = index
-        val pkg = xiaomiTtsPkgs[index]
+        val pkg = allTtsPkgs[index]
         log("TTS: 尝试 $pkg")
         tts?.shutdown()
         tts = TextToSpeech(this, { status ->
             if (status == TextToSpeech.SUCCESS) {
                 onTtsConnected(fromXiaomi = true)
             } else {
-                log("✗ $pkg 失败")
-                tryXiaomiPkgs(index + 1)
+                log("✗ $pkg 失败 status=$status")
+                tryAllPkgs(index + 1)
             }
         }, pkg)
     }
@@ -178,9 +192,9 @@ class StockMonitorService : Service() {
             tts?.shutdown()
             tts = null
             if (fromXiaomi) {
-                tryXiaomiPkgs(xiaomiPkgIdx + 1) // continue from next
+                tryAllPkgs(xiaomiPkgIdx + 1) // continue from next
             } else {
-                tryXiaomiPkgs(0) // start Xiaomi loop
+                tryAllPkgs(0) // start full engine scan
             }
         }
     }
