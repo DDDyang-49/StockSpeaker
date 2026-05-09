@@ -74,6 +74,8 @@ class StockMonitorService : Service() {
     private var lastChangePct = 0.0
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private var isSpeaking = false
+    private val speechChunks = mutableListOf<String>()
+    private var speechCursor = 0
     private val networkExecutor = Executors.newSingleThreadExecutor()
 
     // HTTP client for network TTS fallback
@@ -205,17 +207,23 @@ class StockMonitorService : Service() {
     private val ttsListener = object : UtteranceProgressListener() {
         override fun onStart(id: String?) { isSpeaking = true }
         override fun onDone(id: String?) {
-            isSpeaking = false
-            handler.removeCallbacks(speakingTimeout)
+            speechCursor++
+            if (speechCursor >= speechChunks.size) {
+                isSpeaking = false
+                handler.removeCallbacks(speakingTimeout)
+            }
+            // else: next chunk already queued via QUEUE_ADD, wait for its onDone
         }
         @Deprecated("Deprecated in Java")
         override fun onError(id: String?) {
             isSpeaking = false
+            speechChunks.clear()
             handler.removeCallbacks(speakingTimeout)
             log("⚠ TTS onError")
         }
         override fun onError(id: String?, code: Int) {
             isSpeaking = false
+            speechChunks.clear()
             handler.removeCallbacks(speakingTimeout)
             log("⚠ TTS onError code=$code")
         }
@@ -324,42 +332,46 @@ class StockMonitorService : Service() {
             val interval = config.speakInterval * 1000L
             if (now - lastSpeakTime >= interval) {
                 lastSpeakTime = now
-
-                var speakText = text
-                if (intervalLargeEvents.isNotEmpty()) {
-                    val largest = intervalLargeEvents.maxByOrNull { it.third }
-                    if (largest != null) {
-                        speakText += "。期间${largest.first}${largest.second}${largest.third}手。"
-                    }
+                if (trySpeak(text)) {
                     intervalLargeEvents.clear()
-                }
-
-                if (trySpeak(speakText)) {
                     uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
                 }
             }
         }
     }
 
-    // ── TTS speak: system TTS first, network fallback ──
+    // ── TTS speak: split into sentences, queue them to avoid cutoff ──
 
     private fun trySpeak(text: String): Boolean {
         if (isSpeaking) return false
 
-        // System TTS available → use it
+        val sentences = text.split(Regex("(?<=[。！？])"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (sentences.isEmpty()) return false
+
+        speechChunks.clear()
+        speechChunks.addAll(sentences)
+        speechCursor = 0
+
+        // System TTS available → queue all sentences
         if (ttsReady) {
             isSpeaking = true
-            val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "stock_speak")
+            val result = tts?.speak(speechChunks[0], TextToSpeech.QUEUE_FLUSH, null, "s0")
                 ?: TextToSpeech.ERROR
-            if (result == TextToSpeech.SUCCESS) {
-                handler.postDelayed(speakingTimeout, 15000)
-                return true
+            if (result != TextToSpeech.SUCCESS) {
+                isSpeaking = false
+                log("⚠ system TTS speak失败($result)")
+                return false
             }
-            isSpeaking = false
-            log("⚠ system TTS speak失败($result)")
+            for (i in 1 until speechChunks.size) {
+                tts?.speak(speechChunks[i], TextToSpeech.QUEUE_ADD, null, "s$i")
+            }
+            handler.postDelayed(speakingTimeout, 30000)
+            return true
         }
 
-        // Fall through to network TTS
+        // Fall through to network TTS (unsplit — remote APIs handle long text better)
         isSpeaking = true
         networkExecutor.execute { tryNetworkTts(text) }
         return true
@@ -548,32 +560,156 @@ class StockMonitorService : Service() {
         currentHand: Int,
         speed: Double
     ): String? {
-        val st = when {
-            data.changePct > 0 -> "涨"
-            data.changePct < 0 -> "跌"
-            else -> "平"
+        val parts = mutableListOf<String>()
+
+        // ── 1. 股票名称 + 价格（口语化） ──
+        val header = buildString {
+            append(data.name)
+            if (config.speakPrice) append(spokenPrice(data.price))
+        }
+        parts.add(header)
+
+        // ── 2. 涨跌方向 + 幅度（口语化） ──
+        if (config.speakPct) {
+            parts.add(spokenChange(data.changePct))
         }
 
-        val parts = mutableListOf(data.name)
-        if (config.speakPrice) parts.add("${data.price}元")
-        if (config.speakPct) parts.add("${st}${Math.abs(data.changePct)}%")
-        if (config.speakSpeed && Math.abs(speed) > 0) parts.add("涨速${Math.abs(speed)}%")
-        if (config.speakAmount) parts.add("成交额${data.amountStr}")
-        if (config.speakVolRatio) parts.add("量比${data.volRatio}")
-        if (config.speakCurrentHand) parts.add("现手${currentHand}")
-
-        var text = parts.joinToString("，") + "。"
-
-        if (config.speakLargeOrders) {
-            if (data.largeAsksSpeak.isNotEmpty()) {
-                text += "注意：${data.largeAsksSpeak.joinToString("，")}。"
-            }
-            if (data.largeBidsSpeak.isNotEmpty()) {
-                text += "注意：${data.largeBidsSpeak.joinToString("，")}。"
-            }
+        // ── 3. 涨速（仅在显著时播报） ──
+        if (config.speakSpeed && Math.abs(speed) >= 0.05) {
+            parts.add(spokenSpeed(speed))
         }
 
-        return if (text == "。") null else text
+        // ── 4. 成交额（口语化） ──
+        if (config.speakAmount) {
+            parts.add("成交${spokenAmount(data.amountStr)}")
+        }
+
+        // ── 5. 量比（仅在显著偏离正常时播报） ──
+        if (config.speakVolRatio) {
+            spokenVolRatio(data.volRatio)?.let { parts.add(it) }
+        }
+
+        // ── 6. 现手（仅在大单时播报） ──
+        if (config.speakCurrentHand && currentHand >= config.largeOrderThreshold) {
+            parts.add("现手${spokenHand(currentHand)}")
+        }
+
+        // ── 组装主句 ──
+        val mainText = parts.joinToString("，") + "。"
+
+        // ── 7. 盘口大单（概括而非罗列） ──
+        val alertText = if (config.speakLargeOrders) {
+            spokenLargeOrders(data)?.let { "注意，$it。" } ?: ""
+        } else ""
+
+        // ── 8. 间隔内最大单笔成交 ──
+        val eventText = if (intervalLargeEvents.isNotEmpty()) {
+            val key = intervalLargeEvents.maxByOrNull { it.third }
+            if (key != null && key.third >= config.largeOrderThreshold) {
+                "刚才有${spokenHand(key.third)}${key.second}。"
+            } else ""
+        } else ""
+
+        val fullText = mainText + alertText + eventText
+        return if (fullText == "。") null else fullText
+    }
+
+    // ── 口语格式化辅助函数 ──
+
+    /** "1673.50" → "1673块5", "1673.00" → "1673块", "8.88" → "8块8毛8" */
+    private fun spokenPrice(p: Double): String {
+        val intPart = p.toInt()
+        val frac = Math.round((p - intPart) * 100).toInt()
+        val jiao = frac / 10
+        val fen = frac % 10
+        return buildString {
+            append("${intPart}块")
+            if (jiao > 0) append(jiao)
+            if (fen > 0) append("毛$fen")
+        }
+    }
+
+    /** "+2.01" → "涨了2个点", "-0.05" → "微跌", "+0.00" → "平盘" */
+    private fun spokenChange(pct: Double): String {
+        val abs = Math.abs(pct)
+        return when {
+            pct > 3.0 -> "大涨了${fmtPct(abs)}个点"
+            pct > 0.05 -> "涨了${fmtPct(abs)}个点"
+            pct > 0 -> "微涨"
+            pct < -3.0 -> "大跌了${fmtPct(abs)}个点"
+            pct < -0.05 -> "跌了${fmtPct(abs)}个点"
+            pct < 0 -> "微跌"
+            else -> "平盘"
+        }
+    }
+
+    /** "+0.15" → "正在拉升", "+1.2" → "快速拉升" */
+    private fun spokenSpeed(s: Double): String = when {
+        s > 0.5 -> "快速拉升"
+        s > 0.05 -> "拉升中"
+        s < -0.5 -> "快速下跌"
+        else -> "下跌中"
+    }
+
+    /** "15.20亿" → "15亿", "1.23亿" → "1.2亿", "5000.00万" → "5000万" */
+    private fun spokenAmount(raw: String): String =
+        raw.replace(Regex("\\.0+万"), "万")
+           .replace(Regex("\\.0+亿"), "亿")
+
+    /** 量比 → 仅在偏离正常区间时播报 */
+    private fun spokenVolRatio(vr: Double): String? = when {
+        vr >= 2.5 -> "明显放量"
+        vr >= 1.3 -> "在放量"
+        vr <= 0.4 -> "明显缩量"
+        vr <= 0.7 -> "在缩量"
+        else -> null
+    }
+
+    /** 3000 → "3000手", 13000 → "1万3千手", 25000 → "2万5千手" */
+    private fun spokenHand(hand: Int): String = when {
+        hand >= 10000 -> {
+            val wan = hand / 10000
+            val qian = (hand % 10000) / 1000
+            if (qian > 0) "${wan}万${qian}千手" else "${wan}万手"
+        }
+        hand >= 1000 -> "${hand / 1000}千手"
+        else -> "${hand}手"
+    }
+
+    /** 概括大单盘口，不逐档罗列 */
+    private fun spokenLargeOrders(data: StockData): String? {
+        val askCount = data.largeAsksSpeak.size
+        val bidCount = data.largeBidsSpeak.size
+        if (askCount == 0 && bidCount == 0) return null
+
+        val parts = mutableListOf<String>()
+
+        if (askCount > 0) {
+            // 提取最大压单数量
+            val maxAsk = data.asks.maxByOrNull { it.second }
+            val maxVol = maxAsk?.second ?: 0
+            parts.add(
+                if (askCount >= 3) "卖盘压力不小，最大${spokenHand(maxVol)}压单"
+                else "卖盘有${spokenHand(maxVol)}压单"
+            )
+        }
+
+        if (bidCount > 0) {
+            val maxBid = data.bids.maxByOrNull { it.second }
+            val maxVol = maxBid?.second ?: 0
+            parts.add(
+                if (bidCount >= 3) "买盘托单较多，最大${spokenHand(maxVol)}"
+                else "买盘有${spokenHand(maxVol)}托单"
+            )
+        }
+
+        return parts.joinToString("；")
+    }
+
+    /** 幅度格式化：去掉多余的零 */
+    private fun fmtPct(v: Double): String {
+        val r = Math.round(v * 100) / 100.0
+        return if (r == r.toLong().toDouble()) r.toLong().toString() else r.toString()
     }
 
     private fun createNotificationChannel() {

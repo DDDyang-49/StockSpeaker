@@ -112,29 +112,9 @@ fun StockSpeakerApp(configManager: ConfigManager, versionName: String) {
     var speakLargeOrders by remember { mutableStateOf(initialConfig.speakLargeOrders) }
 
     val uiState by StockMonitorService.uiState.collectAsState()
-    var showTipsDialog by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val shape = RoundedCornerShape(16.dp)
-
-    if (showTipsDialog) {
-        AlertDialog(
-            onDismissRequest = { showTipsDialog = false },
-            title = { Text("安卓防掉后台指南", fontWeight = FontWeight.Bold) },
-            text = {
-                Text(
-                    "受安卓限制，无原生后台服务极易被系统清理。如果您希望应用能在后台持续播报，请务必在手机设置：\n\n" +
-                    "1. 任务列表给本App加【锁】\n" +
-                    "2. 电池优化设为【无限制】\n" +
-                    "3. 开启【自启动】与【允许后台活动】",
-                    fontSize = 14.sp
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { showTipsDialog = false }) { Text("我知道了") }
-            }
-        )
-    }
 
     Scaffold(
         topBar = {
@@ -152,24 +132,6 @@ fun StockSpeakerApp(configManager: ConfigManager, versionName: String) {
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { showTipsDialog = true }) {
-                        Box(
-                            modifier = Modifier
-                                .size(28.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.surfaceVariant),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                "?",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
