@@ -118,7 +118,7 @@ fun App(configManager: ConfigManager) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)) {
                             Box(Modifier.size(6.dp).clip(CircleShape).background(if (state.isRunning) Color(0xFF34D399) else Color(0xFF6B7280)))
                             Spacer(Modifier.width(5.dp))
-                            Text("v1.0.2", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            Text("v1.0.3", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
                         }
                     }
                 }},
@@ -144,13 +144,6 @@ fun App(configManager: ConfigManager) {
 
             // ── 播报内容 ──
             Section("播报内容") {
-                val checks = listOf(
-                    "现价" to priceOpt, "涨幅" to pctOpt, "涨速" to speedOpt,
-                    "成交额" to amountOpt, "量比" to volRatioOpt, "现手" to handOpt, "盘口大单" to largeOrderOpt
-                )
-                val sets = listOf(priceOpt to { priceOpt = it }, pctOpt to { pctOpt = it }, speedOpt to { speedOpt = it },
-                    amountOpt to { amountOpt = it }, volRatioOpt to { volRatioOpt = it },
-                    handOpt to { handOpt = it }, largeOrderOpt to { largeOrderOpt = it })
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column(Modifier.weight(1f)) { Cb("现价", priceOpt, enabled) { priceOpt = it }; Cb("涨幅", pctOpt, enabled) { pctOpt = it }; Cb("涨速", speedOpt, enabled) { speedOpt = it } }
                     Column(Modifier.weight(1f)) { Cb("成交额", amountOpt, enabled) { amountOpt = it }; Cb("量比", volRatioOpt, enabled) { volRatioOpt = it } }
