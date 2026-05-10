@@ -76,6 +76,11 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
 
+        // 如果之前正在盯盘（被系统杀掉后返回），自动恢复
+        if (configManager.load().monitoringActive) {
+            StockMonitorService.start(this)
+        }
+
         val versionName = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0" }
         catch (_: Exception) { "1.0.0" }
 
@@ -205,7 +210,8 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                             aiProvider = aiProvider,
                             aiApiUrl = providerInfo.url,
                             aiModel = providerInfo.model,
-                            aiSummaryInterval = aiInterval.toIntOrNull() ?: 5
+                            aiSummaryInterval = aiInterval.toIntOrNull() ?: 5,
+                            monitoringActive = true
                         ))
                         StockMonitorService.start(ctx)
                     }

@@ -35,7 +35,9 @@ data class AppConfig(
     val aiProvider: String = "deepseek",
     val aiApiUrl: String = "https://api.deepseek.com/v1/chat/completions",
     val aiModel: String = "deepseek-chat",
-    val aiSummaryInterval: Int = 5
+    val aiSummaryInterval: Int = 5,
+    // 运行状态
+    val monitoringActive: Boolean = false
 )
 
 class ConfigManager(context: Context) {
@@ -59,7 +61,8 @@ class ConfigManager(context: Context) {
             aiProvider = prefs.getString("ai_provider", "deepseek") ?: "deepseek",
             aiApiUrl = prefs.getString("ai_api_url", "https://api.deepseek.com/v1/chat/completions") ?: "https://api.deepseek.com/v1/chat/completions",
             aiModel = prefs.getString("ai_model", "deepseek-chat") ?: "deepseek-chat",
-            aiSummaryInterval = prefs.getInt("ai_summary_interval", 5)
+            aiSummaryInterval = prefs.getInt("ai_summary_interval", 5),
+            monitoringActive = prefs.getBoolean("monitoring_active", false)
         )
     }
 
@@ -82,6 +85,11 @@ class ConfigManager(context: Context) {
             .putString("ai_api_url", config.aiApiUrl)
             .putString("ai_model", config.aiModel)
             .putInt("ai_summary_interval", config.aiSummaryInterval)
+            .putBoolean("monitoring_active", config.monitoringActive)
             .apply()
+    }
+
+    fun setMonitoringActive(active: Boolean) {
+        prefs.edit().putBoolean("monitoring_active", active).apply()
     }
 }

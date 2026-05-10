@@ -35,7 +35,10 @@ class StockMonitorService : Service() {
     companion object {
         val uiState = MutableStateFlow(ServiceUiState())
         fun start(context: Context) { context.startForegroundService(Intent(context, StockMonitorService::class.java)) }
-        fun stop(context: Context) { context.stopService(Intent(context, StockMonitorService::class.java)) }
+        fun stop(context: Context) {
+            ConfigManager(context).setMonitoringActive(false)
+            context.stopService(Intent(context, StockMonitorService::class.java))
+        }
     }
 
     private lateinit var config: AppConfig
@@ -86,6 +89,7 @@ class StockMonitorService : Service() {
         if (isRunning) return START_STICKY
         isRunning = true
         val cm = ConfigManager(this); config = cm.load()
+        cm.setMonitoringActive(true)
         lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; intervalLargeEvents.clear()
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
@@ -98,7 +102,12 @@ class StockMonitorService : Service() {
     override fun onDestroy() {
         isRunning = false; handler.removeCallbacksAndMessages(null)
         ttsEngine.shutdown(); aiAnalyzer.shutdown(); netExecutor.shutdownNow()
-        uiState.value = ServiceUiState()
+        val wasActive = ConfigManager(this).load().monitoringActive
+        if (wasActive) {
+            uiState.value = uiState.value.copy(isRunning = false, statusText = "监控中断，返回App自动恢复")
+        } else {
+            uiState.value = ServiceUiState()
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
