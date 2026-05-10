@@ -62,6 +62,11 @@ class StockMonitorService : Service() {
     private var priceStyleIndex = 0
     private var speedStyleIndex = 0
     private var lastDualAnalysisTime = 0L
+    private var postAlertPhase = 0
+    private var normalDeferred = false
+    private var lastAlertText = ""
+    private var lastPostAlertData: StockData? = null
+    private val batchQueue = mutableListOf<String>()
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private val netExecutor = Executors.newSingleThreadExecutor()
     private val aiLogs = mutableListOf<String>()
@@ -98,7 +103,9 @@ class StockMonitorService : Service() {
             NotificationHelper.ACTION_RESUME -> { isPaused = false; aiLog("▶ 恢复"); updateNotif(); return START_STICKY }
             NotificationHelper.ACTION_DISMISS_ALERT -> {
                 ttsEngine.stop(); NotificationHelper.cancelAlert(this)
-                alertFollowUpActive = false; aiLog("🔕 关闭异动提醒")
+                alertFollowUpActive = false; postAlertPhase = 0
+                lastPostAlertData = null; batchQueue.clear()
+                aiLog("🔕 关闭异动提醒")
                 updateNotif(); return START_STICKY
             }
         }
@@ -109,6 +116,8 @@ class StockMonitorService : Service() {
         lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; intervalLargeEvents.clear()
         normalBroadcastCount = 0; pendingAiSummary = null; aiRequestInFlight = false
         lastFillInTime = 0L; fillInCount = 0; lastDualAnalysisTime = 0L
+        postAlertPhase = 0; normalDeferred = false; lastAlertText = ""
+        lastPostAlertData = null; batchQueue.clear()
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
@@ -162,7 +171,17 @@ class StockMonitorService : Service() {
         )
         if (isPaused) return
 
-        // ── 轨道1：实时异动（最高优先级） ──
+        // ── 分批播报队列（低优先级，不阻塞主流程） ──
+        if (!ttsEngine.isSpeaking && batchQueue.isNotEmpty()) {
+            val next = batchQueue.removeAt(0)
+            ttsEngine.speak(next)
+            uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+            return
+        }
+
+        // ═══════════════════════════════════════
+        // 轨道1：实时异动（最高优先级，可打断一切）
+        // ═══════════════════════════════════════
         var alertSpoken = false
         var alertText = ""
         if (!alertSpoken && currentHand >= config.largeOrderThreshold) {
@@ -194,24 +213,43 @@ class StockMonitorService : Service() {
         if (alertSpoken) {
             NotificationHelper.notifyAlert(this@StockMonitorService,
                 NotificationHelper.buildAlert(this@StockMonitorService, alertText))
+            postAlertPhase = 1; lastAlertText = alertText
+            lastPostAlertData = data; normalDeferred = false
+            lastSpeakTime = now; intervalLargeEvents.clear()
+            batchQueue.clear()
+            uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+            return
         }
 
         // ── 轨道1b：连续跟报 ──
-        if (!alertSpoken && alertFollowUpActive && absSpeed >= config.speedAlertThreshold * 0.3) {
+        if (alertFollowUpActive && absSpeed >= config.speedAlertThreshold * 0.3) {
             if (now - lastAlertSpeakTime >= 8000) {
                 val dir = if (speed > 0) "拉升" else "下跌"
                 ttsEngine.speakAlert("${data.name}继续$dir，当前${spokenPrice(data.price)}，${fmtPct(absSpeed)}%")
                 lastAlertSpeakTime = now
                 if (++followUpCount > 30) alertFollowUpActive = false
             }
+            return
         } else if (alertFollowUpActive && absSpeed < config.speedAlertThreshold * 0.3) {
             alertFollowUpActive = false
         }
 
-        if (alertSpoken) {
-            lastSpeakTime = now; intervalLargeEvents.clear()
-            uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
-            return
+        // ═══════════════════════════════════════
+        // 轨道1c：异动后跟进（涨跌幅 + AI复盘）
+        // ═══════════════════════════════════════
+        if (postAlertPhase > 0 && !ttsEngine.isSpeaking) {
+            if (postAlertPhase == 1) {
+                val d = lastPostAlertData ?: data
+                ttsEngine.speak("${d.name}${conciseChange(d.changePct)}。")
+                aiLog("异动跟进: ${conciseChange(d.changePct)}")
+                postAlertPhase = 2; lastSpeakTime = now
+                uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+                return
+            } else if (postAlertPhase == 2) {
+                triggerPostAlertAnalysis()
+                postAlertPhase = 0; lastPostAlertData = null
+                return
+            }
         }
 
         // ── 收集时段内大单 ──
@@ -220,37 +258,55 @@ class StockMonitorService : Service() {
             intervalLargeEvents.add(Triple(nowStr, action, currentHand))
         }
 
-        // ── 轨道2：定时常规播报 + AI 点评 + 长间隔AI插播 ──
+        // ═══════════════════════════════════════
+        // 轨道2：定时常规播报 + AI 点评 + 长间隔AI插播
+        // ═══════════════════════════════════════
+        val intervalMs = config.speakInterval * 1000L
+        val elapsed = now - lastSpeakTime
+
         if (!ttsEngine.isSpeaking) {
+            // 被推迟的正常播报 → 简洁版
+            if (normalDeferred) {
+                ttsEngine.speak("${data.name}${concisePrice(data.price)}，${conciseChange(data.changePct)}。")
+                aiLog("简洁: ${concisePrice(data.price)} ${conciseChange(data.changePct)}")
+                normalDeferred = false
+                lastSpeakTime = now; intervalLargeEvents.clear()
+                uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+                return
+            }
+
             if (pendingAiSummary != null) {
                 val summary = pendingAiSummary!!
                 pendingAiSummary = null
                 ttsEngine.speak(summary)
-            } else {
-                val intervalMs = config.speakInterval * 1000L
-                val elapsed = now - lastSpeakTime
-                if (elapsed >= intervalMs) {
-                    // 常规播报时间到
-                    buildSpeakText(data, currentHand, speed)?.let { text ->
-                        if (ttsEngine.speak(text)) {
-                            lastSpeakTime = now; intervalLargeEvents.clear()
-                            normalBroadcastCount++
-                            fillInCount = 0
-                            uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
-                            maybeGenerateAiSummary(data, speed)
-                        }
-                    }
-                } else if (config.aiEnabled && pendingAiSummary == null && !aiRequestInFlight) {
-                    // 轨道3：双AI分析（替换原AI盘中脉冲 + 混沌分析）
-                    val elapsed = now - lastSpeakTime
-                    val midPoint = intervalMs > 120000 && elapsed >= intervalMs / 2 && fillInCount == 0
-                    val chaos = aiAnalyzer.shouldTriggerDualAnalysis() && now - lastDualAnalysisTime >= 60000
-                    if (midPoint || chaos) {
-                        if (midPoint) fillInCount++
-                        lastDualAnalysisTime = now
-                        triggerDualAnalysis()
+                uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+                return
+            }
+
+            if (elapsed >= intervalMs) {
+                // 常规播报时间到
+                buildSpeakText(data, currentHand, speed)?.let { text ->
+                    if (ttsEngine.speak(text)) {
+                        lastSpeakTime = now; intervalLargeEvents.clear()
+                        normalBroadcastCount++; fillInCount = 0
+                        uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+                        maybeGenerateAiSummary(data, speed)
                     }
                 }
+            } else if (config.aiEnabled && pendingAiSummary == null && !aiRequestInFlight && postAlertPhase == 0) {
+                // 轨道3：双AI / 长间隔AI插播
+                val midPoint = intervalMs > 120000 && elapsed >= intervalMs / 2 && fillInCount == 0
+                val chaos = aiAnalyzer.shouldTriggerDualAnalysis() && now - lastDualAnalysisTime >= 60000
+                if (midPoint || chaos) {
+                    if (midPoint) fillInCount++
+                    lastDualAnalysisTime = now
+                    triggerDualAnalysis()
+                }
+            }
+        } else {
+            // TTS 正忙 → 正常播报到时间了就标记推迟
+            if (elapsed >= intervalMs && !normalDeferred && postAlertPhase == 0) {
+                normalDeferred = true
             }
         }
     }
@@ -260,38 +316,54 @@ class StockMonitorService : Service() {
         if (aiRequestInFlight) return
         if (normalBroadcastCount % config.aiSummaryInterval != 0) return
         aiRequestInFlight = true
-        val stats = buildString {
-            if (Math.abs(speed) >= config.speedAlertThreshold) append("涨速${fmtPct(Math.abs(speed))}% ")
-            if (Math.abs(data.changePct) >= 2.0) append("振幅${fmtPct(Math.abs(data.changePct))}% ")
-        }
-        val news = aiAnalyzer.pickNews(config.stockCode)
-        val fundDir = if (data.changePct > 0) "主力净流入" else "主力净流出"
-        val fundAmt = "${"%.1f".format(Math.abs(data.changePct) * 1.5)}亿"
         val ctx = MarketContext(
-            newsHeadline = news,
-            fundFlow = fundDir,
-            fundFlowAmount = fundAmt,
-            alertStats = stats
+            newsHeadline = aiAnalyzer.pickNews(config.stockCode),
+            fundFlow = if (data.changePct > 0) "主力净流入" else "主力净流出",
+            fundFlowAmount = "${"%.1f".format(Math.abs(data.changePct) * 1.5)}亿",
+            alertStats = ""
         )
         aiAnalyzer.generateSummary(ctx) { summary ->
             aiRequestInFlight = false
             if (summary != null) handler.post {
                 aiLog("AI点评: ${summary.take(30)}...")
-                if (!ttsEngine.speak(summary)) {
-                    pendingAiSummary = summary
+                if (summary.length > 60) {
+                    // 长文本 → 辅AI拆分为短句分批播报
+                    aiAnalyzer.splitIntoBatches(summary) { batches ->
+                        handler.post {
+                            batchQueue.addAll(batches)
+                            if (!ttsEngine.isSpeaking && batchQueue.isNotEmpty()) {
+                                val next = batchQueue.removeAt(0)
+                                ttsEngine.speak(next)
+                            }
+                        }
+                    }
+                } else {
+                    if (!ttsEngine.isSpeaking && batchQueue.isEmpty()) {
+                        if (!ttsEngine.speak(summary)) pendingAiSummary = summary
+                    } else {
+                        pendingAiSummary = summary
+                    }
                 }
             }
         }
     }
 
-    private fun requestMarketPulse(data: StockData) {
+    /** 异动后AI复盘 */
+    private fun triggerPostAlertAnalysis() {
+        if (!config.aiEnabled || config.aiApiKey.isBlank()) return
         if (aiRequestInFlight) return
         aiRequestInFlight = true
-        aiAnalyzer.generateMarketPulse(data.price, data.changePct, data.volRatio, data.amountStr) { pulse ->
+        val snapshots = aiAnalyzer.getRecentSnapshots()
+        val alertText = lastAlertText
+        aiAnalyzer.generatePostAlertAnalysis(alertText, snapshots) { result ->
             aiRequestInFlight = false
-            if (pulse != null) handler.post {
-                aiLog("AI盘中: ${pulse.take(30)}...")
-                if (!ttsEngine.speak(pulse)) { /* 正在播报则跳过，不排队 */ }
+            if (result != null) handler.post {
+                aiLog("异动复盘: ${result.take(30)}...")
+                if (!ttsEngine.isSpeaking) {
+                    ttsEngine.speak(result)
+                } else {
+                    pendingAiSummary = result
+                }
             }
         }
     }
@@ -425,6 +497,40 @@ class StockMonitorService : Service() {
         hand >= 10000 -> { val w = hand / 10000; val q = (hand % 10000) / 1000; if (q > 0) "${w}万${q}千手" else "${w}万手" }
         hand >= 1000 -> "${hand / 1000}千手"
         else -> "${hand}手"
+    }
+
+    // ── 简洁播报（省略单位，如"三十五，涨二点七五"） ──
+
+    private fun numToCn(n: Int): String {
+        if (n == 0) return "零"
+        val d = listOf("", "一", "二", "三", "四", "五", "六", "七", "八", "九")
+        return buildString {
+            val q = n / 1000; val b = (n % 1000) / 100; val s = (n % 100) / 10; val g = n % 10
+            if (q > 0) append(d[q] + "千")
+            if (b > 0) append(d[b] + "百")
+            if (s > 0) { if (s == 1 && q == 0 && b == 0) append("十") else append(d[s] + "十") }
+            if (g > 0) append(d[g])
+        }.let { if (it.startsWith("一十")) it.substring(1) else it }
+    }
+
+    private fun digitCn(d: Int): String = listOf("零","一","二","三","四","五","六","七","八","九")[d]
+
+    private fun concisePrice(p: Double): String {
+        val intPart = p.toInt()
+        val dec = Math.round((p - intPart) * 100).toInt()
+        if (dec == 0) return numToCn(intPart)
+        val j = dec / 10; val f = dec % 10
+        return buildString { append(numToCn(intPart)); append("点"); if (j > 0) append(digitCn(j)); append(digitCn(f)) }
+    }
+
+    private fun conciseChange(pct: Double): String {
+        val abs = Math.abs(pct)
+        val dir = when { pct > 0.01 -> "涨"; pct < -0.01 -> "跌"; else -> return "平盘" }
+        val intPart = abs.toInt(); val dec = Math.round((abs - intPart) * 100).toInt()
+        return buildString {
+            append(dir); append(numToCn(intPart))
+            if (dec > 0) { append("点"); val t = dec / 10; val o = dec % 10; if (t > 0) append(digitCn(t)); append(digitCn(o)) }
+        }
     }
 
     private fun spokenTime(): String {

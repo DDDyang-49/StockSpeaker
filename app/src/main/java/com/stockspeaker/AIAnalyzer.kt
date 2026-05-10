@@ -69,26 +69,13 @@ class AIAnalyzer(
         .build()
     @Volatile private var cachedDualAnalysis: String? = null
 
-    // ── AI 分析风格（15种，随机轮换不重复，全部用完后重置） ──
+    // ── 技术角度标签（供 prompt 参考，不随机选择，让 AI 自行判断重点） ──
 
-    private val analysisStyles = listOf(
-        "股价走势" to "用2-3句口语分析今日该股股价波动特征，像老股民跟朋友聊盘面，不超过60字。",
-        "消息面" to "用2-3句口语聊聊该股可能受什么消息影响，像老股民跟朋友分析，不超过60字。直接说看法。",
-        "买卖点" to "用2-3句口语说说买卖时机判断，像老股民跟朋友交流操作思路，不超过60字。直接了当。",
-        "资金动向" to "用2-3句口语分析资金流向和主力意图，像老股民跟朋友拆解盘面，不超过60字。",
-        "技术形态" to "用2-3句口语分析技术形态和趋势信号，像老股民跟朋友聊技术，不超过60字。",
-        "风险机会" to "用2-3句口语提示风险和机会，像老股民跟朋友提个醒，不超过60字。直接说重点。",
-        "盘口博弈" to "用2-3句口语分析当前买卖盘口力量对比和多空博弈状态，不超过60字。",
-        "量价关系" to "用2-3句口语分析当前成交量与价格走势的配合关系，不超过60字。",
-        "主力意图" to "用2-3句口语推测当前主力资金的操作意图和动向，不超过60字。",
-        "短线情绪" to "用2-3句口语分析当前短线资金情绪和市场氛围，不超过60字。",
-        "异动解读" to "用2-3句口语解读近期盘中异动背后可能的原因和含义，不超过60字。",
-        "大单跟踪" to "用2-3句口语跟踪分析近期大单资金流向和含义，不超过60字。",
-        "板块联动" to "用2-3句口语分析该股与所属板块的联动关系和强弱对比，不超过60字。",
-        "分时特征" to "用2-3句口语分析当日分时走势的特征和关键价位，不超过60字。",
-        "综合研判" to "用2-3句口语综合研判当前盘面，给出最核心的一个判断，不超过60字。"
+    private val techAngles = listOf(
+        "量价关系", "盘口博弈", "资金意图", "技术形态",
+        "分时特征", "短线情绪", "主力动向", "关键价位",
+        "趋势强弱", "变盘信号", "支撑压力", "筹码分布"
     )
-    private val unusedStyles = (0 until analysisStyles.size).toMutableList()
 
     // ── AI 人格轮换（4种角色，让点评语气多变） ──
 
@@ -465,47 +452,160 @@ class AIAnalyzer(
         return patterns[Random.nextInt(patterns.size)]
     }
 
-    // ── 构建发给 LLM 的提示词（随机选风格+轮换人格+消息面+异动统计） ──
-    private fun buildPrompt(context: MarketContext = MarketContext()): String {
+    // ── 构建深度分析提示词（AI 自主判断关键信号，不限定角度） ──
+    private fun buildPrompt(context: MarketContext = MarketContext(), alertContext: String = ""): String {
         if (recentData.isEmpty()) return ""
         val latest = recentData.last()
         val history = recentData.toList()
 
-        val trend = buildString {
-            val first = history.first()
-            val delta = latest.price - first.price
-            append(when {
-                delta > 0.5 -> "持续上涨"
-                delta > 0 -> "小幅上涨"
-                delta < -0.5 -> "持续下跌"
-                delta < 0 -> "小幅下跌"
-                else -> "横盘震荡"
-            })
+        // 趋势判定
+        val first = history.first()
+        val delta = latest.price - first.price
+        val trend = when {
+            delta > 0.5 -> "持续上涨"; delta > 0 -> "小幅上涨"
+            delta < -0.5 -> "持续下跌"; delta < 0 -> "小幅下跌"
+            else -> "横盘震荡"
         }
 
-        // 随机选风格（不重复，用完重置）
-        if (unusedStyles.isEmpty()) unusedStyles.addAll(0 until analysisStyles.size)
-        val styleIdx = unusedStyles.removeAt(Random.nextInt(unusedStyles.size))
-        val (styleName, stylePrompt) = analysisStyles[styleIdx]
+        // 日内振幅
+        val highPrice = history.maxOf { it.price }
+        val lowPrice = history.minOf { it.price }
+        val amplitude = if (lowPrice > 0) "%.2f".format((highPrice - lowPrice) / lowPrice * 100) else "0"
 
-        // 轮换人格
-        val persona = personalities[personalityIndex % personalities.size]
-        personalityIndex++
+        // 量能判断
+        val volDesc = when {
+            latest.volRatio >= 2.5 -> "剧烈放量"
+            latest.volRatio >= 1.5 -> "明显放量"
+            latest.volRatio >= 1.1 -> "温和放量"
+            latest.volRatio <= 0.4 -> "极度缩量"
+            latest.volRatio <= 0.7 -> "偏缩量"
+            else -> "量能正常"
+        }
+
+        // 量价关系
+        val volPriceRel = when {
+            latest.changePct > 0.3 && latest.volRatio > 1.3 -> "价升量增，多头主动"
+            latest.changePct > 0.3 && latest.volRatio < 0.8 -> "价升量缩，上攻乏力有背离"
+            latest.changePct < -0.3 && latest.volRatio > 1.3 -> "价跌量增，空头打压"
+            latest.changePct < -0.3 && latest.volRatio < 0.8 -> "价跌量缩，抛压减轻"
+            Math.abs(latest.changePct) < 0.15 && latest.volRatio > 1.5 -> "放量滞涨，多空分歧大"
+            Math.abs(latest.changePct) < 0.08 && latest.volRatio < 0.5 -> "缩量横盘，变盘前兆"
+            else -> "量价配合正常"
+        }
+
+        // 盘口博弈
+        val orderBook = buildString {
+            if (latest.largeAsksCount > 0 || latest.largeBidsCount > 0) {
+                if (latest.largeAsksCount > 0) append("卖盘${latest.largeAsksCount}档大单")
+                if (latest.largeAsksCount > 0 && latest.largeBidsCount > 0) append("对")
+                if (latest.largeBidsCount > 0) append("买盘${latest.largeBidsCount}档大单")
+                append(when {
+                    latest.largeAsksCount > latest.largeBidsCount + 2 -> "，空方占优"
+                    latest.largeBidsCount > latest.largeAsksCount + 2 -> "，多方占优"
+                    else -> "，多空均衡"
+                })
+            }
+        }
+
+        // 分时特征：价格穿越均线次数（锯齿程度）
+        val avgPrice = history.map { it.price }.average()
+        var crosses = 0
+        for (i in 1 until history.size) {
+            if ((history[i-1].price - avgPrice) * (history[i].price - avgPrice) < 0) crosses++
+        }
+        val jagDesc = when { crosses >= 5 -> "分时锯齿状，反复穿越均线"; crosses >= 3 -> "分时有震荡"; else -> "" }
 
         val changeStr = if (latest.changePct > 0) "+${latest.changePct}%" else "${latest.changePct}%"
 
         return buildString {
-            append("${latest.price}元，$changeStr，")
-            append("近30秒${trend}，量比${latest.volRatio}，成交${latest.amountStr}。")
-            if (context.alertStats.isNotBlank()) append("异动：${context.alertStats}。")
-            if (context.newsHeadline.isNotBlank()) append("消息：${context.newsHeadline}。")
+            append("${latest.price}元，$changeStr，近30秒${trend}。")
+            append("量比${latest.volRatio}（${volDesc}），成交${latest.amountStr}。")
+            append("量价关系：${volPriceRel}。")
+            append("日内振幅${amplitude}%。")
+            if (orderBook.isNotEmpty()) append("盘口：${orderBook}。")
+            if (jagDesc.isNotEmpty()) append(jagDesc + "。")
+            if (alertContext.isNotBlank()) append(alertContext)
+            if (context.alertStats.isNotBlank()) append("近期异动：${context.alertStats}。")
+            if (context.newsHeadline.isNotBlank()) append("消息面：${context.newsHeadline}。")
             if (context.fundFlow.isNotBlank()) append("资金：${context.fundFlow}${context.fundFlowAmount}。")
-            append("分析角度：${styleName}。")
-            append(stylePrompt)
+            append("从以上数据中挑最值得说的1-2个关键信号，用2-4句口语点评。")
+            append("优先关注量价背离、盘口异动、变盘信号。像老股民跟朋友聊盘面，直接说出判断。不超过80字。")
         }
     }
 
-    /** 异步调用 LLM API，结果通过 callback 返回（在 apiExecutor 线程执行） */
+    /** 异动后的专用深度分析提示词 */
+    fun buildPostAlertPrompt(alertText: String, snapshots: List<MarketSnapshot>): String {
+        if (snapshots.isEmpty()) return ""
+        val latest = snapshots.last()
+        val trend = if (snapshots.size >= 2) {
+            val delta = latest.price - snapshots.first().price
+            when { delta > 0.3 -> "拉升"; delta < -0.3 -> "回落"; else -> "震荡" }
+        } else "波动"
+
+        return buildString {
+            append("刚发生异动：${alertText.take(60)}。")
+            append("异动后当前${latest.price}元，${trend}中。")
+            append("量比${latest.volRatio}，成交${latest.amountStr}。")
+            append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
+            append("分析这波异动可能是什么意图？后续走势怎么看？")
+            append("用2-3句口语点评，像老股民复盘异动，不超过60字。")
+        }
+    }
+
+    /** 将长文本发给辅AI拆分为分批播报的短句 */
+    fun splitIntoBatches(fullText: String, callback: (List<String>) -> Unit) {
+        val configB = aiTwoConfigProvider()
+        if (!configB.enabled || configB.apiKey.isBlank() || fullText.length <= 60) {
+            // 辅AI不可用时直接用句号拆分
+            val parts = fullText.split(Regex("[。！？]"))
+                .map { it.trim() }.filter { it.isNotEmpty() && it.length > 3 }
+            callback(if (parts.size > 1) parts else listOf(fullText))
+            return
+        }
+
+        apiExecutor.execute {
+            try {
+                val systemPrompt = "你是文本拆分助手。严格按JSON数组格式输出，不要其他内容。"
+                val userPrompt = "将以下股评拆分为2-3段独立的口语短句，每段15-35字，适合语音播报。直接返回JSON数组：[\"段1\",\"段2\",\"段3\"]。原文：${fullText}"
+                val json = """
+                    |{
+                    |  "model": "${configB.model}",
+                    |  "messages": [
+                    |    {"role": "system", "content": "${toJsonStr(systemPrompt)}"},
+                    |    {"role": "user", "content": "${toJsonStr(userPrompt)}"}
+                    |  ],
+                    |  "max_tokens": 80,
+                    |  "temperature": 0.2
+                    |}
+                """.trimMargin()
+
+                val request = Request.Builder()
+                    .url(configB.apiUrl)
+                    .header("Authorization", "Bearer ${configB.apiKey}")
+                    .header("Content-Type", "application/json")
+                    .post(json.toRequestBody("application/json".toMediaType()))
+                    .build()
+
+                val response = httpClient.newCall(request).execute()
+                val body = response.body?.string()
+                if (!response.isSuccessful) {
+                    callback(listOf(fullText)); return@execute
+                }
+                val content = body?.let { extractJsonStr(it, "content") } ?: run { callback(listOf(fullText)); return@execute }
+                val cleaned = content.replace("```json", "").replace("```", "").trim()
+                val start = cleaned.indexOf('[')
+                val end = cleaned.lastIndexOf(']')
+                if (start == -1 || end == -1) { callback(listOf(fullText)); return@execute }
+                val arrStr = cleaned.substring(start, end + 1)
+                val items = Regex("\"([^\"]*)\"").findAll(arrStr).map { it.groupValues[1] }.toList()
+                callback(if (items.isNotEmpty()) items else listOf(fullText))
+            } catch (_: Exception) {
+                callback(listOf(fullText))
+            }
+        }
+    }
+
+    /** 深度分析：综合技术面+盘口博弈+K线+大盘，AI自主判断关键信号 */
     fun generateSummary(context: MarketContext = MarketContext(), callback: (String?) -> Unit) {
         val config = aiConfigProvider()
         if (!config.enabled || config.apiKey.isBlank()) {
@@ -519,20 +619,30 @@ class AIAnalyzer(
             return
         }
 
-        // 随机选人格做 system prompt
-        val persona = personalities[(personalityIndex + Random.nextInt(personalities.size)) % personalities.size]
+        // 轮换人格
+        val persona = personalities[personalityIndex % personalities.size]
+        personalityIndex++
+
+        val systemPrompt = buildString {
+            append(persona)
+            append("你盯盘20年，精通量价关系、波浪结构、盘口博弈、筹码分布。")
+            append("从技术面+盘口博弈角度，挑盘面最值得说的1-2个信号点评。")
+            append("如果看到量价背离、关键位突破/失守、盘口异动，优先说。")
+            append("用2-4句口语，像跟朋友聊盘面。不超过80字。")
+            append("不要'当前''根据数据'套话，直接说出判断。")
+        }
 
         apiExecutor.execute {
             try {
-                onLog("🤖 AI: 调用 ${config.model}...")
+                onLog("🤖 AI: 深度分析 ${config.model}...")
                 val json = """
                     |{
                     |  "model": "${config.model}",
                     |  "messages": [
-                    |    {"role": "system", "content": "${toJsonStr(persona + "用1-2句口语点评盘面，不超过50字。像朋友聊天那样自然。不要'当前''根据数据'等套话，直接说出你的判断。")}"},
+                    |    {"role": "system", "content": "${toJsonStr(systemPrompt)}"},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
                     |  ],
-                    |  "max_tokens": 80,
+                    |  "max_tokens": 120,
                     |  "temperature": 0.8
                     |}
                 """.trimMargin()
@@ -551,7 +661,7 @@ class AIAnalyzer(
                     callback(null)
                     return@execute
                 }
-                val content = if (body != null) extractJsonStr(body, "content") else null
+                val content = body?.let { extractJsonStr(it, "content") }
                 if (content != null) {
                     onLog("🤖 AI: ✓ ${content.take(40)}...")
                 } else {
@@ -565,45 +675,33 @@ class AIAnalyzer(
         }
     }
 
-    /** 盘中脉冲点评：在长间隔中间插入的简短盘面感受（更快、更短） */
-    fun generateMarketPulse(
-        price: Double,
-        changePct: Double,
-        volRatio: Double,
-        amount: String,
-        callback: (String?) -> Unit
-    ) {
+    /** 异动后专用AI分析（独立prompt，强调异动背景） */
+    fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, callback: (String?) -> Unit) {
         val config = aiConfigProvider()
         if (!config.enabled || config.apiKey.isBlank()) {
             callback(null)
             return
         }
 
-        // 判断盘面状态，给AI更精准的上下文
-        val condition = when {
-            Math.abs(changePct) < 0.08 && volRatio < 0.7 -> "横盘缩量，交投清淡，几乎没什么波动"
-            Math.abs(changePct) < 0.08 && volRatio > 1.5 -> "横盘但放量，多空在较劲，僵持不下"
-            Math.abs(changePct) < 0.25 -> "窄幅震荡，方向不明确，在选方向"
-            volRatio > 2.0 -> "放量明显，资金博弈激烈，分歧加大"
-            changePct > 0.5 -> "偏强运行，多头略占上风"
-            changePct < -0.5 -> "偏弱运行，空头略占上风"
-            else -> "正常波动，没有明显方向"
-        }
+        val prompt = buildPostAlertPrompt(alertText, snapshots)
+        if (prompt.isEmpty()) { callback(null); return }
 
-        val persona = personalities[Random.nextInt(personalities.size)]
-        val prompt = "当前${price}元，涨跌${changePct}%，量比${volRatio}，成交${amount}。盘面：${condition}。用1句话口语点评现在的盘面状态，不超过25字。像盯盘的朋友随口说一句感受。"
+        val persona = personalities[personalityIndex % personalities.size]
+        personalityIndex++
+        val systemPrompt = "${persona}用2-3句口语复盘这波异动，不超过60字。像老股民看到异动后的第一反应。"
 
         apiExecutor.execute {
             try {
+                onLog("🤖 AI: 异动复盘...")
                 val json = """
                     |{
                     |  "model": "${config.model}",
                     |  "messages": [
-                    |    {"role": "system", "content": "${toJsonStr(persona + "用1句话口语说盘面感受，不超过25字。像盯盘的朋友随口一说。不要套话，直接说。")}"},
+                    |    {"role": "system", "content": "${toJsonStr(systemPrompt)}"},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
                     |  ],
-                    |  "max_tokens": 50,
-                    |  "temperature": 0.9
+                    |  "max_tokens": 80,
+                    |  "temperature": 0.8
                     |}
                 """.trimMargin()
 
@@ -617,9 +715,12 @@ class AIAnalyzer(
                 val response = httpClient.newCall(request).execute()
                 val body = response.body?.string()
                 if (!response.isSuccessful) { callback(null); return@execute }
-                val content = if (body != null) extractJsonStr(body, "content") else null
+                val content = body?.let { extractJsonStr(it, "content") }
+                if (content != null) onLog("🤖 AI: ✓ ${content.take(40)}...")
+                else onLog("🤖 AI: ✗ 解析响应失败")
                 callback(content)
             } catch (e: Exception) {
+                onLog("🤖 AI: ✗ ${e.message?.take(50) ?: "未知错误"}")
                 callback(null)
             }
         }

@@ -82,6 +82,9 @@ object NotificationHelper {
             .setContentText(text.take(80))
             .setAutoCancel(true)
             .setOngoing(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .addAction(0, "关闭提醒", dismissIntent)
             .setContentIntent(PendingIntent.getActivity(
                 context, 4, Intent(context, MainActivity::class.java),
