@@ -54,6 +54,8 @@ class StockMonitorService : Service() {
     companion object {
         const val CHANNEL_ID = "stock_monitor"
         const val NOTIFICATION_ID = 1
+        const val ACTION_PAUSE = "com.stockspeaker.PAUSE"
+        const val ACTION_RESUME = "com.stockspeaker.RESUME"
 
         val uiState = MutableStateFlow(ServiceUiState())
 
@@ -78,6 +80,12 @@ class StockMonitorService : Service() {
     private var lastChangePct = 0.0
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private var isSpeaking = false
+    private var isPaused = false
+    private var summaryBroadcastCount = 0
+    // 异动连续跟报状态
+    private var alertFollowUpActive = false
+    private var lastAlertSpeakTime = 0L
+    private var followUpCount = 0
     private val speechChunks = mutableListOf<String>()
     private var speechCursor = 0
     private val networkExecutor = Executors.newSingleThreadExecutor()
@@ -112,7 +120,7 @@ class StockMonitorService : Service() {
         configManager = ConfigManager(this)
         aiAnalyzer = AIAnalyzer {
             val c = configManager.load()
-            AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, summaryInterval = c.aiSummaryInterval)
+            AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, apiUrl = c.aiApiUrl, summaryInterval = c.aiSummaryInterval)
         }
         handler = Handler(Looper.getMainLooper())
         createNotificationChannel()
@@ -241,6 +249,22 @@ class StockMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 处理暂停/继续通知动作
+        when (intent?.action) {
+            ACTION_PAUSE -> {
+                isPaused = true
+                stopSpeaking()
+                log("⏸ 用户暂停播报")
+                updateNotificationPauseState()
+                return START_STICKY
+            }
+            ACTION_RESUME -> {
+                isPaused = false
+                log("▶ 用户恢复播报")
+                updateNotificationPauseState()
+                return START_STICKY
+            }
+        }
         if (!isRunning) {
             isRunning = true
             val config = configManager.load()
@@ -249,7 +273,7 @@ class StockMonitorService : Service() {
             lastChangePct = 0.0
             intervalLargeEvents.clear()
 
-            startForeground(NOTIFICATION_ID, buildNotification(config.stockCode))
+            startForeground(NOTIFICATION_ID, buildNotification(config.stockCode, isPaused))
             val existing = uiState.value
             uiState.value = existing.copy(
                 statusText = if (ttsReady) "🟢 正在监控: ${config.stockCode}..."
@@ -315,6 +339,7 @@ class StockMonitorService : Service() {
 
         val now = System.currentTimeMillis()
         val nowStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(now))
+        val absSpeed = Math.abs(speed)
 
         uiState.value = uiState.value.copy(
             stockName = data.name,
@@ -331,6 +356,98 @@ class StockMonitorService : Service() {
             isRunning = true
         )
 
+        // 用户暂停 → 不做任何播报
+        if (isPaused) return
+
+        // ═══════════════════════════════════════════
+        // 轨道1：实时异动（最高优先级，QUEUE_FLUSH）
+        // ═══════════════════════════════════════════
+
+        var alertSpoken = false
+
+        // 1a. 大单异动（现手超过阈值）
+        if (!alertSpoken && currentHand >= config.largeOrderThreshold) {
+            val action = when {
+                speed > 0.3 -> "大单买入"
+                speed < -0.3 -> "大单卖出"
+                else -> "大单成交"
+            }
+            speakAlert("注意！${spokenHand(currentHand)}${action}！")
+            alertSpoken = true
+            lastAlertSpeakTime = now
+            alertFollowUpActive = false
+        }
+
+        // 1b. 快速拉升/砸盘（涨速超过阈值）
+        if (!alertSpoken && absSpeed >= config.speedAlertThreshold) {
+            val dir = if (speed > 0) "快速拉升" else "快速下跌"
+            val pctLabel = if (speed > 0) "涨幅" else "跌幅"
+            speakAlert("注意！$dir！${data.name}当前${spokenPrice(data.price)}，${pctLabel}${fmtPct(absSpeed)}%")
+            alertSpoken = true
+            lastAlertSpeakTime = now
+            // 进入连续跟报模式
+            alertFollowUpActive = true
+            followUpCount = 0
+        }
+
+        // 1c. AI 异动检测（放量突破/高位急转/盘口大单跳变）
+        if (!alertSpoken) {
+            try {
+                val snapshot = MarketSnapshot(
+                    time = now,
+                    price = data.price,
+                    changePct = data.changePct,
+                    speed = speed,
+                    volRatio = data.volRatio,
+                    amountStr = data.amountStr,
+                    currentHand = currentHand,
+                    largeAsksCount = data.largeAsksSpeak.size,
+                    largeBidsCount = data.largeBidsSpeak.size
+                )
+                val patterns = aiAnalyzer.feed(snapshot)
+                if (patterns.isNotEmpty()) {
+                    val patternText = patterns.joinToString("") { it.speakText }
+                    log("AI异动: ${patterns.map { it.type.name }.joinToString()}")
+                    speakAlert(patternText)
+                    alertSpoken = true
+                    lastAlertSpeakTime = now
+                    alertFollowUpActive = false
+                }
+            } catch (_: Exception) {}
+        }
+
+        // ═══════════════════════════════════════════
+        // 轨道1b：连续跟报（快速拉升/砸盘持续期间，每~8秒更新一次）
+        // ═══════════════════════════════════════════
+
+        if (!alertSpoken && alertFollowUpActive) {
+            if (absSpeed >= config.speedAlertThreshold * 0.3) {
+                if (now - lastAlertSpeakTime >= 8000) {
+                    val dir = if (speed > 0) "拉升" else "下跌"
+                    speakAlert("${data.name}继续$dir，当前${spokenPrice(data.price)}，${fmtPct(absSpeed)}%")
+                    lastAlertSpeakTime = now
+                    followUpCount++
+                    if (followUpCount > 30) alertFollowUpActive = false
+                }
+            } else {
+                // 涨速回落，退出跟报
+                alertFollowUpActive = false
+            }
+        }
+
+        // 异动触发后重置常规播报定时器
+        if (alertSpoken) {
+            lastSpeakTime = now
+            intervalLargeEvents.clear()
+            uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+            return
+        }
+
+        // ═══════════════════════════════════════════
+        // 轨道2：定时常规播报
+        // ═══════════════════════════════════════════
+
+        // 收集间隔内大单事件（用于常规播报末尾拼接）
         if (currentHand >= config.largeOrderThreshold) {
             val action = when {
                 speed > 0 -> "主动买入"
@@ -343,47 +460,36 @@ class StockMonitorService : Service() {
         buildSpeakText(data, config, currentHand, speed)?.let { text ->
             val interval = config.speakInterval * 1000L
             if (now - lastSpeakTime >= interval) {
-                lastSpeakTime = now
                 if (trySpeak(text)) {
+                    lastSpeakTime = now
                     intervalLargeEvents.clear()
                     uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
-                    // 每次成功播报后触发 AI 总结检查
-                    tryGenerateAiSummary()
                 }
+                tryGenerateAiSummary(data, speed)
             }
         }
-
-        // ── AI 异动检测（每次轮询都跑，不等播报间隔） ──
-        try {
-            val snapshot = MarketSnapshot(
-                time = now,
-                price = data.price,
-                changePct = data.changePct,
-                speed = speed,
-                volRatio = data.volRatio,
-                amountStr = data.amountStr,
-                currentHand = currentHand,
-                largeAsksCount = data.largeAsksSpeak.size,
-                largeBidsCount = data.largeBidsSpeak.size
-            )
-            val patterns = aiAnalyzer.feed(snapshot)
-            if (patterns.isNotEmpty() && !isSpeaking) {
-                val patternText = patterns.joinToString("") { it.speakText }
-                log("AI异动: ${patterns.map { it.type.name }.joinToString()}")
-                trySpeak(patternText)
-            }
-        } catch (_: Exception) {}
     }
 
-    private fun tryGenerateAiSummary() {
-        if (!aiAnalyzer.shouldGenerateSummary()) return
-        aiAnalyzer.generateSummary { summary ->
+    private fun tryGenerateAiSummary(data: StockData, speed: Double) {
+        val appConfig = configManager.load()
+        if (!appConfig.aiEnabled || appConfig.aiApiKey.isBlank()) return
+
+        summaryBroadcastCount++
+        if (summaryBroadcastCount % appConfig.aiSummaryInterval != 0) return
+
+        // 构建异动统计
+        val alertStats = buildString {
+            val absSpeed = Math.abs(speed)
+            if (absSpeed >= appConfig.speedAlertThreshold) append("涨速${fmtPct(absSpeed)}% ")
+            if (Math.abs(data.changePct) >= 2.0) append("振幅${fmtPct(Math.abs(data.changePct))}% ")
+        }
+        val marketContext = generateMockContext(appConfig.stockCode, data.changePct).copy(alertStats = alertStats)
+
+        aiAnalyzer.generateSummary(marketContext) { summary ->
             if (summary != null) {
                 handler.post {
-                    if (isRunning && !isSpeaking) {
-                        log("AI总结: ${summary.take(30)}...")
-                        trySpeak("AI盘面总结：$summary")
-                    }
+                    log("AI总结: ${summary.take(30)}...")
+                    speakAlert("AI点评：$summary")
                 }
             }
         }
@@ -391,8 +497,45 @@ class StockMonitorService : Service() {
 
     // ── TTS speak: split into sentences, queue them to avoid cutoff ──
 
-    private fun trySpeak(text: String): Boolean {
-        if (isSpeaking) return false
+    /** 强制停止所有正在播报的语音（TTS + MediaPlayer） */
+    private fun stopSpeaking() {
+        tts?.stop()
+        mediaPlayer?.stop()
+        mediaPlayer?.release()
+        mediaPlayer = null
+        isSpeaking = false
+        speechChunks.clear()
+        speechCursor = 0
+        handler.removeCallbacks(speakingTimeout)
+    }
+
+    /** 异动播报：最高优先级，QUEUE_FLUSH 清空当前语音立即插播 */
+    private fun speakAlert(text: String) {
+        stopSpeaking()
+        log("⚠ 异动: ${text.take(40)}...")
+        if (ttsReady) {
+            isSpeaking = true
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "alert")
+            handler.postDelayed(speakingTimeout, 30000)
+        } else {
+            isSpeaking = true
+            networkExecutor.execute { tryNetworkTts(text) }
+        }
+    }
+
+    private fun trySpeak(text: String, interrupt: Boolean = false): Boolean {
+        if (isSpeaking && !interrupt) return false
+
+        if (interrupt && isSpeaking) {
+            // 中断当前播报
+            tts?.stop()
+            mediaPlayer?.stop()
+            mediaPlayer?.release()
+            mediaPlayer = null
+            isSpeaking = false
+            speechChunks.clear()
+            handler.removeCallbacks(speakingTimeout)
+        }
 
         val sentences = text.split(Regex("(?<=[。！？])"))
             .map { it.trim() }
@@ -814,9 +957,21 @@ class StockMonitorService : Service() {
         nm.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(code: String) = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle("摸鱼听盘")
-        .setContentText("正在监控 $code...")
+    private fun pauseIntent() = PendingIntent.getService(
+        this, 1,
+        Intent(this, StockMonitorService::class.java).setAction(ACTION_PAUSE),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
+
+    private fun resumeIntent() = PendingIntent.getService(
+        this, 2,
+        Intent(this, StockMonitorService::class.java).setAction(ACTION_RESUME),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
+
+    private fun buildNotification(code: String, paused: Boolean = false) = NotificationCompat.Builder(this, CHANNEL_ID)
+        .setContentTitle(if (paused) "摸鱼听盘 ⏸" else "摸鱼听盘")
+        .setContentText(if (paused) "已暂停播报" else "正在监控 $code...")
         .setSmallIcon(R.drawable.ic_notification)
         .setOngoing(true)
         .setContentIntent(
@@ -826,6 +981,8 @@ class StockMonitorService : Service() {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
         )
+        .addAction(if (paused) NotificationCompat.Action.Builder(0, "▶ 继续", resumeIntent()).build()
+                   else NotificationCompat.Action.Builder(0, "⏸ 暂停", pauseIntent()).build())
         .build()
 
     private fun updateNotification(data: StockData) {
@@ -837,8 +994,8 @@ class StockMonitorService : Service() {
         val content =
             "${data.name} ${data.price} (${st}${Math.abs(data.changePct)}%)"
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("摸鱼听盘")
-            .setContentText(content)
+            .setContentTitle(if (isPaused) "摸鱼听盘 ⏸" else "摸鱼听盘")
+            .setContentText(if (isPaused) "已暂停播报" else content)
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .setContentIntent(
@@ -848,8 +1005,30 @@ class StockMonitorService : Service() {
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                 )
             )
+            .addAction(if (isPaused) NotificationCompat.Action.Builder(0, "▶ 继续", resumeIntent()).build()
+                       else NotificationCompat.Action.Builder(0, "⏸ 暂停", pauseIntent()).build())
             .build()
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun updateNotificationPauseState() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(if (isPaused) "摸鱼听盘 ⏸" else "摸鱼听盘")
+            .setContentText(if (isPaused) "已暂停播报" else "继续监控中...")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setOngoing(true)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this, 0,
+                    Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+            )
+            .addAction(if (isPaused) NotificationCompat.Action.Builder(0, "▶ 继续", resumeIntent()).build()
+                       else NotificationCompat.Action.Builder(0, "⏸ 暂停", pauseIntent()).build())
+            .build()
         nm.notify(NOTIFICATION_ID, notification)
     }
 }

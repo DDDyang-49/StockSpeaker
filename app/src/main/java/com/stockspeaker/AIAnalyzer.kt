@@ -40,6 +40,7 @@ data class Pattern(
 data class AiConfig(
     val enabled: Boolean = false,
     val apiKey: String = "",
+    val apiUrl: String = "https://api.deepseek.com/v1/chat/completions",
     val summaryInterval: Int = 5
 )
 
@@ -47,7 +48,6 @@ class AIAnalyzer(
     private val aiConfigProvider: () -> AiConfig
 ) {
     private val recentData = ArrayDeque<MarketSnapshot>(20)
-    private var broadcastCount = 0
     private var lastLargeAskCount = 0
     private var lastLargeBidCount = 0
     private val apiExecutor = Executors.newSingleThreadExecutor()
@@ -56,7 +56,19 @@ class AIAnalyzer(
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    /** 喂入一条行情数据，返回本次检测到的异动列表 */
+    // ── AI 总结多样式轮换 ──
+
+    private val analysisStyles = listOf(
+        "股价走势" to "用2-3句口语分析今日该股股价波动特征，像老股民跟朋友聊盘面，不超过60字。",
+        "消息面" to "用2-3句口语聊聊该股可能受什么消息影响，像老股民跟朋友分析，不超过60字。直接说看法。",
+        "买卖点" to "用2-3句口语说说买卖时机判断，像老股民跟朋友交流操作思路，不超过60字。直接了当。",
+        "资金动向" to "用2-3句口语分析资金流向和主力意图，像老股民跟朋友拆解盘面，不超过60字。",
+        "技术形态" to "用2-3句口语分析技术形态和趋势信号，像老股民跟朋友聊技术，不超过60字。",
+        "风险机会" to "用2-3句口语提示风险和机会，像老股民跟朋友提个醒，不超过60字。直接说重点。"
+    )
+    private var styleIndex = 0
+
+    /** 喂入一条行情数据，返回本次检测到的异动列表（实时检测，无冷却） */
     fun feed(snapshot: MarketSnapshot): List<Pattern> {
         recentData.addLast(snapshot)
         if (recentData.size > 20) recentData.removeFirst()
@@ -105,16 +117,8 @@ class AIAnalyzer(
         return patterns
     }
 
-    /** 是否该生成 AI 总结了（每 N 次常规播报触发一次） */
-    fun shouldGenerateSummary(): Boolean {
-        val config = aiConfigProvider()
-        if (!config.enabled || config.apiKey.isBlank()) return false
-        broadcastCount++
-        return broadcastCount % config.summaryInterval == 0
-    }
-
-    /** 构建发给 DeepSeek 的提示词 */
-    private fun buildPrompt(): String {
+    /** 构建发给 LLM 的提示词（轮换不同分析角度 + 消息面 + 异动统计） */
+    private fun buildPrompt(context: MarketContext = MarketContext()): String {
         if (recentData.isEmpty()) return ""
         val latest = recentData.last()
         val history = recentData.toList()
@@ -131,22 +135,29 @@ class AIAnalyzer(
             })
         }
 
+        val changeStr = if (latest.changePct > 0) "+${latest.changePct}%" else "${latest.changePct}%"
+        val (styleName, stylePrompt) = analysisStyles[styleIndex % analysisStyles.size]
+        styleIndex++
+
         return buildString {
-            append("${latest.price}元，${if (latest.changePct > 0) "+" else ""}${latest.changePct}%，")
+            append("${latest.price}元，$changeStr，")
             append("近30秒${trend}，量比${latest.volRatio}，成交${latest.amountStr}。")
-            append("口语总结盘面，像老股民跟朋友聊两句，不超过60字。")
+            if (context.alertStats.isNotBlank()) append("异动：${context.alertStats}。")
+            if (context.newsHeadline.isNotBlank()) append("消息：${context.newsHeadline}。")
+            if (context.fundFlow.isNotBlank()) append("资金：${context.fundFlow}${context.fundFlowAmount}。")
+            append(stylePrompt)
         }
     }
 
-    /** 异步调用 DeepSeek API，结果通过 callback 返回（在 apiExecutor 线程执行） */
-    fun generateSummary(callback: (String?) -> Unit) {
+    /** 异步调用 LLM API，结果通过 callback 返回（在 apiExecutor 线程执行） */
+    fun generateSummary(context: MarketContext = MarketContext(), callback: (String?) -> Unit) {
         val config = aiConfigProvider()
         if (!config.enabled || config.apiKey.isBlank()) {
             callback(null)
             return
         }
 
-        val prompt = buildPrompt()
+        val prompt = buildPrompt(context)
         if (prompt.isEmpty()) {
             callback(null)
             return
@@ -158,16 +169,16 @@ class AIAnalyzer(
                     |{
                     |  "model": "deepseek-chat",
                     |  "messages": [
-                    |    {"role": "system", "content": "你是老股民，用2-3句口语总结盘面，不超过60字。像跟朋友聊天那样自然。不要'当前''根据数据'等套话，直接说出你的判断。"},
+                    |    {"role": "system", "content": "你是老股民，用1-2句口语点评盘面，不超过50字。像朋友聊天那样自然。不要'当前''根据数据'等套话，直接说出你的判断。"},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
                     |  ],
-                    |  "max_tokens": 150,
+                    |  "max_tokens": 80,
                     |  "temperature": 0.7
                     |}
                 """.trimMargin()
 
                 val request = Request.Builder()
-                    .url("https://api.deepseek.com/v1/chat/completions")
+                    .url(config.apiUrl)
                     .header("Authorization", "Bearer ${config.apiKey}")
                     .header("Content-Type", "application/json")
                     .post(json.toRequestBody("application/json".toMediaType()))
