@@ -106,6 +106,7 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     var volRatioOpt by remember { mutableStateOf(cfg.speakVolRatio) }
     var handOpt by remember { mutableStateOf(cfg.speakCurrentHand) }
     var largeOrderOpt by remember { mutableStateOf(cfg.speakLargeOrders) }
+    var transactionOpt by remember { mutableStateOf(cfg.speakTransactionDetail) }
     var aiEnabled by remember { mutableStateOf(cfg.aiEnabled) }
     var aiProvider by remember { mutableStateOf(cfg.aiProvider) }
     var aiKey by remember { mutableStateOf(cfg.aiApiKey) }
@@ -154,7 +155,7 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column(Modifier.weight(1f)) { Cb("现价", priceOpt, enabled) { priceOpt = it }; Cb("涨幅", pctOpt, enabled) { pctOpt = it }; Cb("涨速", speedOpt, enabled) { speedOpt = it } }
                     Column(Modifier.weight(1f)) { Cb("成交额", amountOpt, enabled) { amountOpt = it }; Cb("量比", volRatioOpt, enabled) { volRatioOpt = it } }
-                    Column(Modifier.weight(1f)) { Cb("现手", handOpt, enabled) { handOpt = it }; Cb("盘口大单", largeOrderOpt, enabled) { largeOrderOpt = it } }
+                    Column(Modifier.weight(1f)) { Cb("现手", handOpt, enabled) { handOpt = it }; Cb("盘口大单", largeOrderOpt, enabled) { largeOrderOpt = it }; Cb("成交明细", transactionOpt, enabled) { transactionOpt = it } }
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -206,6 +207,7 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                             speakCurrentHand = handOpt, speakAmount = amountOpt,
                             speakVolRatio = volRatioOpt, speakSpeed = speedOpt,
                             speakLargeOrders = largeOrderOpt,
+                            speakTransactionDetail = transactionOpt,
                             aiEnabled = aiEnabled, aiApiKey = aiKey.trim(),
                             aiProvider = aiProvider,
                             aiApiUrl = providerInfo.url,

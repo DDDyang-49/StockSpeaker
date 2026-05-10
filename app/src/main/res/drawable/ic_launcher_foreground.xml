@@ -5,27 +5,29 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Sound bars (left) — volume/speaker indicator -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.85"
-        android:pathData="M28,44 L34,44 L34,52 L28,52 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.85"
-        android:pathData="M28,56 L34,56 L34,62 L28,62 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.85"
-        android:pathData="M28,66 L34,66 L34,70 L28,70 Z" />
+    <!-- 所有元素控制在 72dp 安全区内，距边界至少 18dp -->
 
-    <!-- Main upward arrow (centered, filled) — stock trend -->
+    <!-- 左侧音量条（由短到长） -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M54,24 L78,52 L66,52 L66,78 L42,78 L42,52 L30,52 Z" />
+        android:fillAlpha="0.65"
+        android:pathData="M35,55 h4 v3 h-4 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.75"
+        android:pathData="M35,60 h4 v5 h-4 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.85"
+        android:pathData="M35,67 h4 v7 h-4 Z" />
 
-    <!-- Accent dot (upper right) — market insight spark -->
+    <!-- 主图标：实心上箭头（居中，缩小至安全区） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,39 L67,53 L60,53 L60,70 L48,70 L48,53 L41,53 Z" />
+
+    <!-- 右上绿色光点（盘面信号） -->
     <path
         android:fillColor="#34D399"
-        android:pathData="M76,28 a4,4 0,1,0 0,8 a4,4 0,1,0 0,-8" />
+        android:pathData="M65,43 a3,3 0,1,0 0,6 a3,3 0,1,0 0,-6" />
 </vector>

@@ -29,6 +29,7 @@ data class AppConfig(
     val speakVolRatio: Boolean = true,
     val speakSpeed: Boolean = false,
     val speakLargeOrders: Boolean = true,
+    val speakTransactionDetail: Boolean = false,
     // AI 配置
     val aiEnabled: Boolean = false,
     val aiApiKey: String = "",
@@ -56,6 +57,7 @@ class ConfigManager(context: Context) {
             speakVolRatio = prefs.getBoolean("speak_vol_ratio", true),
             speakSpeed = prefs.getBoolean("speak_speed", false),
             speakLargeOrders = prefs.getBoolean("speak_large_orders", true),
+            speakTransactionDetail = prefs.getBoolean("speak_transaction_detail", false),
             aiEnabled = prefs.getBoolean("ai_enabled", false),
             aiApiKey = prefs.getString("ai_api_key", "") ?: "",
             aiProvider = prefs.getString("ai_provider", "deepseek") ?: "deepseek",
@@ -79,6 +81,7 @@ class ConfigManager(context: Context) {
             .putBoolean("speak_vol_ratio", config.speakVolRatio)
             .putBoolean("speak_speed", config.speakSpeed)
             .putBoolean("speak_large_orders", config.speakLargeOrders)
+            .putBoolean("speak_transaction_detail", config.speakTransactionDetail)
             .putBoolean("ai_enabled", config.aiEnabled)
             .putString("ai_api_key", config.aiApiKey)
             .putString("ai_provider", config.aiProvider)

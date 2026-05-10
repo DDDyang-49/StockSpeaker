@@ -56,6 +56,11 @@ class StockMonitorService : Service() {
     private var normalBroadcastCount = 0
     private var pendingAiSummary: String? = null
     private var aiRequestInFlight = false
+    private var lastFillInTime = 0L
+    private var fillInCount = 0
+    private var changeStyleIndex = 0
+    private var priceStyleIndex = 0
+    private var speedStyleIndex = 0
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private val netExecutor = Executors.newSingleThreadExecutor()
     private val aiLogs = mutableListOf<String>()
@@ -94,6 +99,8 @@ class StockMonitorService : Service() {
         cm.setMonitoringActive(true)
         lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; intervalLargeEvents.clear()
         normalBroadcastCount = 0; pendingAiSummary = null; aiRequestInFlight = false
+        lastFillInTime = 0L; fillInCount = 0
+        changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
         runLoop()
@@ -196,22 +203,31 @@ class StockMonitorService : Service() {
             intervalLargeEvents.add(Triple(nowStr, action, currentHand))
         }
 
-        // ── 轨道2：定时常规播报 + AI 点评 ──
+        // ── 轨道2：定时常规播报 + AI 点评 + 长间隔AI插播 ──
         if (!ttsEngine.isSpeaking) {
             if (pendingAiSummary != null) {
                 val summary = pendingAiSummary!!
                 pendingAiSummary = null
                 ttsEngine.speak(summary)
             } else {
-                buildSpeakText(data, currentHand, speed)?.let { text ->
-                    if (now - lastSpeakTime >= config.speakInterval * 1000L) {
+                val intervalMs = config.speakInterval * 1000L
+                val elapsed = now - lastSpeakTime
+                if (elapsed >= intervalMs) {
+                    // 常规播报时间到
+                    buildSpeakText(data, currentHand, speed)?.let { text ->
                         if (ttsEngine.speak(text)) {
                             lastSpeakTime = now; intervalLargeEvents.clear()
                             normalBroadcastCount++
+                            fillInCount = 0
                             uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
                             maybeGenerateAiSummary(data, speed)
                         }
                     }
+                } else if (config.aiEnabled && intervalMs > 120000 && elapsed >= intervalMs / 2 && fillInCount == 0 && pendingAiSummary == null) {
+                    // 长间隔中途插入AI盘面脉冲点评
+                    fillInCount++
+                    lastFillInTime = now
+                    requestMarketPulse(data)
                 }
             }
         }
@@ -226,7 +242,15 @@ class StockMonitorService : Service() {
             if (Math.abs(speed) >= config.speedAlertThreshold) append("涨速${fmtPct(Math.abs(speed))}% ")
             if (Math.abs(data.changePct) >= 2.0) append("振幅${fmtPct(Math.abs(data.changePct))}% ")
         }
-        val ctx = generateMockContext(config.stockCode, data.changePct).copy(alertStats = stats)
+        val news = aiAnalyzer.pickNews(config.stockCode)
+        val fundDir = if (data.changePct > 0) "主力净流入" else "主力净流出"
+        val fundAmt = "${"%.1f".format(Math.abs(data.changePct) * 1.5)}亿"
+        val ctx = MarketContext(
+            newsHeadline = news,
+            fundFlow = fundDir,
+            fundFlowAmount = fundAmt,
+            alertStats = stats
+        )
         aiAnalyzer.generateSummary(ctx) { summary ->
             aiRequestInFlight = false
             if (summary != null) handler.post {
@@ -234,6 +258,18 @@ class StockMonitorService : Service() {
                 if (!ttsEngine.speak(summary)) {
                     pendingAiSummary = summary
                 }
+            }
+        }
+    }
+
+    private fun requestMarketPulse(data: StockData) {
+        if (aiRequestInFlight) return
+        aiRequestInFlight = true
+        aiAnalyzer.generateMarketPulse(data.price, data.changePct, data.volRatio, data.amountStr) { pulse ->
+            aiRequestInFlight = false
+            if (pulse != null) handler.post {
+                aiLog("AI盘中: ${pulse.take(30)}...")
+                if (!ttsEngine.speak(pulse)) { /* 正在播报则跳过，不排队 */ }
             }
         }
     }
@@ -252,7 +288,12 @@ class StockMonitorService : Service() {
         val event = intervalLargeEvents.maxByOrNull { it.third }?.let {
             if (it.third >= config.largeOrderThreshold) "刚才有${spokenHand(it.third)}${it.second}。" else ""
         } ?: ""
-        val full = main + alert + event
+        // 成交明细播报
+        val detail = if (config.speakTransactionDetail && currentHand >= config.largeOrderThreshold) {
+            val dir = when { speed > 0.3 -> "买入"; speed < -0.3 -> "卖出"; else -> "" }
+            "${spokenTime()}，${spokenPrice(data.price)}${dir}成交${spokenHand(currentHand)}手。"
+        } else ""
+        val full = main + alert + event + detail
         return if (full == "。") null else full
     }
 
@@ -262,36 +303,95 @@ class StockMonitorService : Service() {
         val intPart = p.toInt()
         val frac = Math.round((p - intPart) * 100).toInt()
         val jiao = frac / 10; val fen = frac % 10
-        return buildString { append("${intPart}块"); if (jiao > 0) append(jiao); if (fen > 0) append("毛$fen") }
+        val style = priceStyleIndex % 3
+        priceStyleIndex++
+        return when (style) {
+            0 -> buildString { append("${intPart}块"); if (jiao > 0) append(jiao); if (fen > 0) append("毛$fen") }
+            1 -> buildString { append("${intPart}点"); if (jiao > 0) append(jiao); if (fen > 0) append(fen) }
+            else -> if (jiao > 0 || fen > 0) "${intPart}.${jiao}${fen}元" else "${intPart}元"
+        }
     }
 
-    private fun spokenChange(pct: Double): String = when {
-        pct > 3.0 -> "大涨了${fmtPct(Math.abs(pct))}个点"
-        pct > 0.05 -> "涨了${fmtPct(Math.abs(pct))}个点"
-        pct > 0 -> "微涨"
-        pct < -3.0 -> "大跌了${fmtPct(Math.abs(pct))}个点"
-        pct < -0.05 -> "跌了${fmtPct(Math.abs(pct))}个点"
-        pct < 0 -> "微跌"
-        else -> "平盘"
+    private fun spokenChange(pct: Double): String {
+        val dir = when {
+            pct > 3.0 -> "大涨"
+            pct > 0.05 -> "涨"
+            pct > 0 -> return "微涨"
+            pct < -3.0 -> "大跌"
+            pct < -0.05 -> "跌"
+            pct < 0 -> return "微跌"
+            else -> return "平盘"
+        }
+        val v = fmtPct(Math.abs(pct))
+        val style = changeStyleIndex % 4
+        changeStyleIndex++
+        return when (style) {
+            0 -> "${dir}了${v}个点"
+            1 -> "${dir}幅${v}个百分点"
+            2 -> "${dir}百分之${v}"
+            else -> "${dir}${v}%"
+        }
     }
 
-    private fun spokenSpeed(s: Double): String = when {
-        s > 0.5 -> "快速拉升"; s > 0.05 -> "拉升中"
-        s < -0.5 -> "快速下跌"; else -> "下跌中"
+    private fun spokenSpeed(s: Double): String {
+        val style = speedStyleIndex % 4
+        speedStyleIndex++
+        return when {
+            s > 0.5 -> when (style) {
+                0 -> "快速拉升"; 1 -> "急速上攻"; 2 -> "强势拉升"; else -> "快速走高"
+            }
+            s > 0.05 -> when (style) {
+                0 -> "拉升中"; 1 -> "缓慢上行"; 2 -> "逐步走高"; else -> "正在拉升"
+            }
+            s < -0.5 -> when (style) {
+                0 -> "快速下跌"; 1 -> "急速下挫"; 2 -> "快速走低"; else -> "跳水下跌"
+            }
+            else -> when (style) {
+                0 -> "下跌中"; 1 -> "缓慢下行"; 2 -> "逐步走低"; else -> "正在回落"
+            }
+        }
     }
 
     private fun spokenAmount(raw: String): String =
         raw.replace(Regex("\\.0+万"), "万").replace(Regex("\\.0+亿"), "亿")
 
-    private fun spokenVolRatio(vr: Double): String? = when {
-        vr >= 2.5 -> "明显放量"; vr >= 1.3 -> "在放量"
-        vr <= 0.4 -> "明显缩量"; vr <= 0.7 -> "在缩量"; else -> null
+    private var volStyleIndex = 0
+    private fun spokenVolRatio(vr: Double): String? {
+        val style = volStyleIndex % 3
+        volStyleIndex++
+        return when {
+            vr >= 2.5 -> when (style) {
+                0 -> "明显放量"; 1 -> "放量明显"; else -> "成交量显著放大"
+            }
+            vr >= 1.3 -> when (style) {
+                0 -> "在放量"; 1 -> "量能温和放大"; else -> "成交趋于活跃"
+            }
+            vr <= 0.4 -> when (style) {
+                0 -> "明显缩量"; 1 -> "交投清淡"; else -> "成交萎缩"
+            }
+            vr <= 0.7 -> when (style) {
+                0 -> "在缩量"; 1 -> "量能偏弱"; else -> "成交不活跃"
+            }
+            else -> null
+        }
     }
 
     private fun spokenHand(hand: Int): String = when {
         hand >= 10000 -> { val w = hand / 10000; val q = (hand % 10000) / 1000; if (q > 0) "${w}万${q}千手" else "${w}万手" }
         hand >= 1000 -> "${hand / 1000}千手"
         else -> "${hand}手"
+    }
+
+    private fun spokenTime(): String {
+        val cal = java.util.Calendar.getInstance()
+        val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
+        val minute = cal.get(java.util.Calendar.MINUTE)
+        return when {
+            minute == 0 -> "${hour}点整"
+            minute == 30 -> "${hour}点半"
+            minute < 10 -> "${hour}点零${minute}分"
+            else -> "${hour}点${minute}分"
+        }
     }
 
     private fun spokenLargeOrders(data: StockData): String? {

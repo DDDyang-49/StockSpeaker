@@ -6,6 +6,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 
 // ── 行情快照（每次轮询产出一个） ──
 
@@ -58,7 +59,7 @@ class AIAnalyzer(
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    // ── AI 总结多样式轮换 ──
+    // ── AI 分析风格（15种，随机轮换不重复，全部用完后重置） ──
 
     private val analysisStyles = listOf(
         "股价走势" to "用2-3句口语分析今日该股股价波动特征，像老股民跟朋友聊盘面，不超过60字。",
@@ -66,9 +67,65 @@ class AIAnalyzer(
         "买卖点" to "用2-3句口语说说买卖时机判断，像老股民跟朋友交流操作思路，不超过60字。直接了当。",
         "资金动向" to "用2-3句口语分析资金流向和主力意图，像老股民跟朋友拆解盘面，不超过60字。",
         "技术形态" to "用2-3句口语分析技术形态和趋势信号，像老股民跟朋友聊技术，不超过60字。",
-        "风险机会" to "用2-3句口语提示风险和机会，像老股民跟朋友提个醒，不超过60字。直接说重点。"
+        "风险机会" to "用2-3句口语提示风险和机会，像老股民跟朋友提个醒，不超过60字。直接说重点。",
+        "盘口博弈" to "用2-3句口语分析当前买卖盘口力量对比和多空博弈状态，不超过60字。",
+        "量价关系" to "用2-3句口语分析当前成交量与价格走势的配合关系，不超过60字。",
+        "主力意图" to "用2-3句口语推测当前主力资金的操作意图和动向，不超过60字。",
+        "短线情绪" to "用2-3句口语分析当前短线资金情绪和市场氛围，不超过60字。",
+        "异动解读" to "用2-3句口语解读近期盘中异动背后可能的原因和含义，不超过60字。",
+        "大单跟踪" to "用2-3句口语跟踪分析近期大单资金流向和含义，不超过60字。",
+        "板块联动" to "用2-3句口语分析该股与所属板块的联动关系和强弱对比，不超过60字。",
+        "分时特征" to "用2-3句口语分析当日分时走势的特征和关键价位，不超过60字。",
+        "综合研判" to "用2-3句口语综合研判当前盘面，给出最核心的一个判断，不超过60字。"
     )
-    private var styleIndex = 0
+    private val unusedStyles = (0 until analysisStyles.size).toMutableList()
+
+    // ── AI 人格轮换（4种角色，让点评语气多变） ──
+
+    private val personalities = listOf(
+        "你是老股民，用口语点评盘面。像朋友聊天那样自然，直接说出判断。",
+        "你是游资操盘手，从短线博弈角度犀利点评。说话干脆利落，一针见血。",
+        "你是基本面研究员，从价值角度审视盘面异动。理性冷静，言之有物。",
+        "你是技术派交易员，从K线和量价角度点评。说话带着盯盘的感觉，接地气。"
+    )
+    private var personalityIndex = 0
+
+    // ── 消息面池（30+条，按时间+股票代码混合选择，保证多变） ──
+
+    private val newsPool = listOf(
+        "板块轮动加速，资金高低切换明显",
+        "北向资金今日净买入，权重股获青睐",
+        "行业政策面利好频出，市场情绪回暖",
+        "量能持续萎缩，短线博弈加剧",
+        "大单资金午后异动，游资活跃度提升",
+        "主力资金净流入板块龙头，跟风盘增多",
+        "市场分歧加大，多空博弈激烈",
+        "外围市场走强，情绪传导至A股",
+        "机构调仓迹象明显，部分品种遭减持",
+        "业绩预告窗口期，资金谨慎观望",
+        "技术面出现底背离信号，抄底资金试探",
+        "政策利好预期升温，相关板块受关注",
+        "大宗交易溢价成交，机构抢筹迹象",
+        "融资余额连续上升，杠杆资金活跃",
+        "量化资金高频进出，盘口波动加大",
+        "ETF资金持续流入，被动配置需求强",
+        "解禁压力临近，部分资金提前出逃",
+        "业绩超预期个股获追捧，联动效应",
+        "行业龙头发布回购公告，信心提振",
+        "宏观数据好于预期，顺周期板块走强",
+        "地缘风险缓释，市场风险偏好回升",
+        "汇率波动加大，出口导向型企业承压",
+        "社保基金增持消息，长线资金入场",
+        "短线游资获利出逃，高位股承压",
+        "次新股活跃，投机氛围浓厚",
+        "股指期货贴水收窄，市场预期改善",
+        "两融余额创新高，多空对赌加剧",
+        "机构研报密集推荐，关注度提升",
+        "产业链上下游联动，景气度传导",
+        "定增解禁到期，短期抛压增加",
+        "高送转预期升温，投机资金涌入",
+        "大宗商品价格波动，相关个股异动"
+    )
 
     /** 喂入一条行情数据，返回本次检测到的异动列表（实时检测，无冷却） */
     fun feed(snapshot: MarketSnapshot): List<Pattern> {
@@ -119,7 +176,14 @@ class AIAnalyzer(
         return patterns
     }
 
-    /** 构建发给 LLM 的提示词（轮换不同分析角度 + 消息面 + 异动统计） */
+    /** 选取下一条消息面（带时间+代码混合因子，保证每次不同） */
+    fun pickNews(code: String): String {
+        val seed = (code.hashCode().ushr(16) + (System.currentTimeMillis() / 30000).toInt()) % newsPool.size
+        val idx = (seed + Random.nextInt(0, newsPool.size)) % newsPool.size
+        return newsPool[idx]
+    }
+
+    /** 构建发给 LLM 的提示词（随机选风格+轮换人格+消息面+异动统计） */
     private fun buildPrompt(context: MarketContext = MarketContext()): String {
         if (recentData.isEmpty()) return ""
         val latest = recentData.last()
@@ -137,9 +201,16 @@ class AIAnalyzer(
             })
         }
 
+        // 随机选风格（不重复，用完重置）
+        if (unusedStyles.isEmpty()) unusedStyles.addAll(0 until analysisStyles.size)
+        val styleIdx = unusedStyles.removeAt(Random.nextInt(unusedStyles.size))
+        val (styleName, stylePrompt) = analysisStyles[styleIdx]
+
+        // 轮换人格
+        val persona = personalities[personalityIndex % personalities.size]
+        personalityIndex++
+
         val changeStr = if (latest.changePct > 0) "+${latest.changePct}%" else "${latest.changePct}%"
-        val (styleName, stylePrompt) = analysisStyles[styleIndex % analysisStyles.size]
-        styleIndex++
 
         return buildString {
             append("${latest.price}元，$changeStr，")
@@ -147,6 +218,7 @@ class AIAnalyzer(
             if (context.alertStats.isNotBlank()) append("异动：${context.alertStats}。")
             if (context.newsHeadline.isNotBlank()) append("消息：${context.newsHeadline}。")
             if (context.fundFlow.isNotBlank()) append("资金：${context.fundFlow}${context.fundFlowAmount}。")
+            append("分析角度：${styleName}。")
             append(stylePrompt)
         }
     }
@@ -165,6 +237,9 @@ class AIAnalyzer(
             return
         }
 
+        // 随机选人格做 system prompt
+        val persona = personalities[(personalityIndex + Random.nextInt(personalities.size)) % personalities.size]
+
         apiExecutor.execute {
             try {
                 onLog("🤖 AI: 调用 ${config.model}...")
@@ -172,11 +247,11 @@ class AIAnalyzer(
                     |{
                     |  "model": "${config.model}",
                     |  "messages": [
-                    |    {"role": "system", "content": "你是老股民，用1-2句口语点评盘面，不超过50字。像朋友聊天那样自然。不要'当前''根据数据'等套话，直接说出你的判断。"},
+                    |    {"role": "system", "content": "${toJsonStr(persona + "用1-2句口语点评盘面，不超过50字。像朋友聊天那样自然。不要'当前''根据数据'等套话，直接说出你的判断。")}"},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
                     |  ],
                     |  "max_tokens": 80,
-                    |  "temperature": 0.7
+                    |  "temperature": 0.8
                     |}
                 """.trimMargin()
 
@@ -203,6 +278,66 @@ class AIAnalyzer(
                 callback(content)
             } catch (e: Exception) {
                 onLog("🤖 AI: ✗ ${e.message?.take(50) ?: "未知错误"}")
+                callback(null)
+            }
+        }
+    }
+
+    /** 盘中脉冲点评：在长间隔中间插入的简短盘面感受（更快、更短） */
+    fun generateMarketPulse(
+        price: Double,
+        changePct: Double,
+        volRatio: Double,
+        amount: String,
+        callback: (String?) -> Unit
+    ) {
+        val config = aiConfigProvider()
+        if (!config.enabled || config.apiKey.isBlank()) {
+            callback(null)
+            return
+        }
+
+        // 判断盘面状态，给AI更精准的上下文
+        val condition = when {
+            Math.abs(changePct) < 0.08 && volRatio < 0.7 -> "横盘缩量，交投清淡，几乎没什么波动"
+            Math.abs(changePct) < 0.08 && volRatio > 1.5 -> "横盘但放量，多空在较劲，僵持不下"
+            Math.abs(changePct) < 0.25 -> "窄幅震荡，方向不明确，在选方向"
+            volRatio > 2.0 -> "放量明显，资金博弈激烈，分歧加大"
+            changePct > 0.5 -> "偏强运行，多头略占上风"
+            changePct < -0.5 -> "偏弱运行，空头略占上风"
+            else -> "正常波动，没有明显方向"
+        }
+
+        val persona = personalities[Random.nextInt(personalities.size)]
+        val prompt = "当前${price}元，涨跌${changePct}%，量比${volRatio}，成交${amount}。盘面：${condition}。用1句话口语点评现在的盘面状态，不超过25字。像盯盘的朋友随口说一句感受。"
+
+        apiExecutor.execute {
+            try {
+                val json = """
+                    |{
+                    |  "model": "${config.model}",
+                    |  "messages": [
+                    |    {"role": "system", "content": "${toJsonStr(persona + "用1句话口语说盘面感受，不超过25字。像盯盘的朋友随口一说。不要套话，直接说。")}"},
+                    |    {"role": "user", "content": ${toJsonStr(prompt)}}
+                    |  ],
+                    |  "max_tokens": 50,
+                    |  "temperature": 0.9
+                    |}
+                """.trimMargin()
+
+                val request = Request.Builder()
+                    .url(config.apiUrl)
+                    .header("Authorization", "Bearer ${config.apiKey}")
+                    .header("Content-Type", "application/json")
+                    .post(json.toRequestBody("application/json".toMediaType()))
+                    .build()
+
+                val response = httpClient.newCall(request).execute()
+                val body = response.body?.string()
+                if (!response.isSuccessful) { callback(null); return@execute }
+                val content = if (body != null) extractJsonStr(body, "content") else null
+                callback(content)
+            } catch (e: Exception) {
                 callback(null)
             }
         }
