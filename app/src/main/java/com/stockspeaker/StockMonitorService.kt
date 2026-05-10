@@ -96,6 +96,11 @@ class StockMonitorService : Service() {
         when (intent?.action) {
             NotificationHelper.ACTION_PAUSE -> { isPaused = true; ttsEngine.stop(); aiLog("⏸ 暂停"); updateNotif(); return START_STICKY }
             NotificationHelper.ACTION_RESUME -> { isPaused = false; aiLog("▶ 恢复"); updateNotif(); return START_STICKY }
+            NotificationHelper.ACTION_DISMISS_ALERT -> {
+                ttsEngine.stop(); NotificationHelper.cancelAlert(this)
+                alertFollowUpActive = false; aiLog("🔕 关闭异动提醒")
+                updateNotif(); return START_STICKY
+            }
         }
         if (isRunning) return START_STICKY
         isRunning = true
@@ -159,15 +164,18 @@ class StockMonitorService : Service() {
 
         // ── 轨道1：实时异动（最高优先级） ──
         var alertSpoken = false
+        var alertText = ""
         if (!alertSpoken && currentHand >= config.largeOrderThreshold) {
             val action = when { speed > 0.3 -> "大单买入"; speed < -0.3 -> "大单卖出"; else -> "大单成交" }
-            ttsEngine.speakAlert("注意！${spokenHand(currentHand)}$action！")
+            alertText = "注意！${spokenHand(currentHand)}$action！"
+            ttsEngine.speakAlert(alertText)
             alertSpoken = true; lastAlertSpeakTime = now; alertFollowUpActive = false
         }
         if (!alertSpoken && absSpeed >= config.speedAlertThreshold) {
             val dir = if (speed > 0) "快速拉升" else "快速下跌"
             val tag = if (speed > 0) "涨幅" else "跌幅"
-            ttsEngine.speakAlert("注意！$dir！${data.name}当前${spokenPrice(data.price)}，${tag}${fmtPct(absSpeed)}%")
+            alertText = "注意！$dir！${data.name}当前${spokenPrice(data.price)}，${tag}${fmtPct(absSpeed)}%"
+            ttsEngine.speakAlert(alertText)
             alertSpoken = true; lastAlertSpeakTime = now; alertFollowUpActive = true; followUpCount = 0
         }
         if (!alertSpoken) {
@@ -176,11 +184,16 @@ class StockMonitorService : Service() {
                     data.amountStr, currentHand, data.largeAsksSpeak.size, data.largeBidsSpeak.size)
                 val patterns = aiAnalyzer.feed(snapshot)
                 if (patterns.isNotEmpty()) {
+                    alertText = patterns.joinToString("") { it.speakText }
                     aiLog("AI异动: ${patterns.map { it.type.name }.joinToString()}")
-                    ttsEngine.speakAlert(patterns.joinToString("") { it.speakText })
+                    ttsEngine.speakAlert(alertText)
                     alertSpoken = true; lastAlertSpeakTime = now; alertFollowUpActive = false
                 }
             } catch (_: Exception) {}
+        }
+        if (alertSpoken) {
+            NotificationHelper.notifyAlert(this@StockMonitorService,
+                NotificationHelper.buildAlert(this@StockMonitorService, alertText))
         }
 
         // ── 轨道1b：连续跟报 ──
@@ -227,21 +240,15 @@ class StockMonitorService : Service() {
                             maybeGenerateAiSummary(data, speed)
                         }
                     }
-                } else if (config.aiEnabled && intervalMs > 120000 && elapsed >= intervalMs / 2 && fillInCount == 0 && pendingAiSummary == null) {
-                    // 长间隔中途插入AI盘面脉冲点评
-                    fillInCount++
-                    lastFillInTime = now
-                    requestMarketPulse(data)
-                } else if (config.aiEnabled && config.aiTwoEnabled && pendingAiSummary == null && !aiRequestInFlight) {
-                    // 轨道3：双AI混沌分析（盘面混沌时触发，冷却60秒）
-                    if (aiAnalyzer.shouldTriggerDualAnalysis() && now - lastDualAnalysisTime >= 60000) {
+                } else if (config.aiEnabled && pendingAiSummary == null && !aiRequestInFlight) {
+                    // 轨道3：双AI分析（替换原AI盘中脉冲 + 混沌分析）
+                    val elapsed = now - lastSpeakTime
+                    val midPoint = intervalMs > 120000 && elapsed >= intervalMs / 2 && fillInCount == 0
+                    val chaos = aiAnalyzer.shouldTriggerDualAnalysis() && now - lastDualAnalysisTime >= 60000
+                    if (midPoint || chaos) {
+                        if (midPoint) fillInCount++
                         lastDualAnalysisTime = now
-                        aiAnalyzer.generateDualAnalysis(aiAnalyzer.getRecentSnapshots()) { text ->
-                            if (text != null) handler.post {
-                                aiLog("双AI: ${text.take(30)}...")
-                                ttsEngine.speak(text)
-                            }
-                        }
+                        triggerDualAnalysis()
                     }
                 }
             }
@@ -285,6 +292,29 @@ class StockMonitorService : Service() {
             if (pulse != null) handler.post {
                 aiLog("AI盘中: ${pulse.take(30)}...")
                 if (!ttsEngine.speak(pulse)) { /* 正在播报则跳过，不排队 */ }
+            }
+        }
+    }
+
+    /** 双AI深度分析：先拉取历史K线+大盘数据，再调用双AI并行分析 */
+    private fun triggerDualAnalysis() {
+        if (aiRequestInFlight) return
+        aiRequestInFlight = true
+        netExecutor.execute {
+            val history = StockFetcher.fetchDailyHistoryText(config.stockCode)
+            val index = StockFetcher.fetchShanghaiIndexText()
+            aiAnalyzer.generateDualAnalysis(
+                aiAnalyzer.getRecentSnapshots(),
+                dailyHistory = history,
+                shanghaiIndex = index
+            ) { text ->
+                aiRequestInFlight = false
+                if (text != null) handler.post {
+                    aiLog("双AI: ${text.take(30)}...")
+                    if (!ttsEngine.isSpeaking) {
+                        ttsEngine.speak(text)
+                    }
+                }
             }
         }
     }

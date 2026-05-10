@@ -67,6 +67,7 @@ class AIAnalyzer(
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
+    @Volatile private var cachedDualAnalysis: String? = null
 
     // ── AI 分析风格（15种，随机轮换不重复，全部用完后重置） ──
 
@@ -232,9 +233,14 @@ class AIAnalyzer(
         return score
     }
 
-    /** 双AI并行分析（全部在后台线程，不阻塞主线程） */
+    fun getCachedDualAnalysis(): String? = cachedDualAnalysis
+    fun clearCachedDualAnalysis() { cachedDualAnalysis = null }
+
+    /** 双AI并行分析 + 预生成缓存 */
     fun generateDualAnalysis(
         snapshots: List<MarketSnapshot>,
+        dailyHistory: String = "",
+        shanghaiIndex: String = "",
         callback: (String?) -> Unit
     ) {
         val configA = aiConfigProvider()
@@ -250,7 +256,7 @@ class AIAnalyzer(
             // AI-A：技术面（主 AI，通常用好模型）
             dualExecutor.execute {
                 try {
-                    val r = callAiForStance(configA, buildTechPrompt(snapshots))
+                    val r = callAiForStance(configA, buildTechPrompt(snapshots, dailyHistory, shanghaiIndex))
                     resultA = r
                     onLog("双AI-A: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                 } catch (_: Exception) { onLog("双AI-A: 异常") }
@@ -261,7 +267,7 @@ class AIAnalyzer(
             if (useB) {
                 dualExecutor.execute {
                     try {
-                        val r = callAiForStance(configB, buildFundPrompt(snapshots))
+                        val r = callAiForStance(configB, buildFundPrompt(snapshots, dailyHistory, shanghaiIndex))
                         resultB = r
                         onLog("双AI-B: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                     } catch (_: Exception) { onLog("双AI-B: 异常") }
@@ -273,25 +279,30 @@ class AIAnalyzer(
             if (!ok) onLog("双AI: 超时 A=${resultA != null} B=${resultB != null}")
 
             val text = synthesize(resultA, resultB)
-            if (text != null) onLog("双AI合成: ${text.take(40)}...")
+            if (text != null) {
+                onLog("双AI合成: ${text.take(40)}...")
+                cachedDualAnalysis = text
+            }
             callback(text)
         }
     }
 
     // ── 构建提示词 ──
 
-    private fun buildTechPrompt(snapshots: List<MarketSnapshot>): String {
+    private fun buildTechPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = ""): String {
         val latest = snapshots.last()
         val trend = describeTrend(snapshots)
         return buildString {
             append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
             append("成交${latest.amountStr}，近30秒${trend}。")
             append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
-            append("从技术面和盘口博弈角度判断多空方向。")
+            if (dailyHistory.isNotBlank()) append("近5日K线：${dailyHistory}。")
+            if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
+            append("综合技术面、K线形态、盘口博弈和大盘环境，判断多空方向。")
         }
     }
 
-    private fun buildFundPrompt(snapshots: List<MarketSnapshot>): String {
+    private fun buildFundPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = ""): String {
         val latest = snapshots.last()
         val trend = describeTrend(snapshots)
         val fundDir = if (latest.changePct > 0) "偏流入" else if (latest.changePct < 0) "偏流出" else "平衡"
@@ -299,7 +310,9 @@ class AIAnalyzer(
             append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
             append("成交${latest.amountStr}，资金${fundDir}，近30秒${trend}。")
             append("卖盘${latest.largeAsksCount}单对买盘${latest.largeBidsCount}单。")
-            append("从资金流向和主力意图角度判断多空方向。")
+            if (dailyHistory.isNotBlank()) append("近日K线：${dailyHistory}。")
+            if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
+            append("综合资金流向、主力意图、近日K线趋势和大盘环境，判断多空方向。")
         }
     }
 

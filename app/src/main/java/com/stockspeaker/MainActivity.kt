@@ -26,6 +26,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -33,7 +36,11 @@ import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -116,9 +123,32 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     var aiTwoProvider by remember { mutableStateOf(cfg.aiTwoProvider) }
     var aiTwoKey by remember { mutableStateOf(cfg.aiTwoApiKey) }
     var showKey2 by remember { mutableStateOf(false) }
+    var selectedTab by remember { mutableStateOf(0) }
 
     val state by StockMonitorService.uiState.collectAsState()
     val ctx = LocalContext.current
+    val enabled = !state.isRunning
+
+    fun buildConfig(): AppConfig {
+        val pi = AI_PROVIDERS.find { it.id == aiProvider } ?: AI_PROVIDERS[0]
+        val pi2 = AI_PROVIDERS.find { it.id == aiTwoProvider } ?: AI_PROVIDERS[0]
+        val twoKey = aiTwoKey.trim().ifBlank { aiKey.trim() }
+        return AppConfig(
+            stockCode = code.trim(), speakInterval = interval.toIntOrNull() ?: 15,
+            largeOrderThreshold = threshold.toIntOrNull() ?: 500,
+            speakPrice = priceOpt, speakPct = pctOpt,
+            speakCurrentHand = handOpt, speakAmount = amountOpt,
+            speakVolRatio = volRatioOpt, speakSpeed = speedOpt,
+            speakLargeOrders = largeOrderOpt,
+            speakTransactionDetail = transactionOpt,
+            aiEnabled = aiEnabled, aiApiKey = aiKey.trim(),
+            aiProvider = aiProvider, aiApiUrl = pi.url, aiModel = pi.model,
+            aiSummaryInterval = aiInterval.toIntOrNull() ?: 5,
+            aiTwoEnabled = aiTwoEnabled, aiTwoApiKey = twoKey,
+            aiTwoProvider = aiTwoProvider, aiTwoApiUrl = pi2.url, aiTwoModel = pi2.model,
+            monitoringActive = true
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -137,144 +167,275 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         },
+        bottomBar = {
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp
+            ) {
+                NavigationBarItem(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    icon = { Icon(Icons.Filled.Home, "盯盘") },
+                    label = { Text("盯盘") },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    icon = { Icon(Icons.Filled.Settings, "设置") },
+                    label = { Text("设置") },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                )
+            }
+        },
         containerColor = MaterialTheme.colorScheme.background
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp).verticalScroll(rememberScrollState())) {
-            Spacer(Modifier.height(4.dp))
-            val enabled = !state.isRunning
+        when (selectedTab) {
+            0 -> MonitorTab(pad, state, enabled, ctx, code, { buildConfig() }, configManager)
+            1 -> SettingsTab(pad, state, enabled, code, { code = it }, interval, { interval = it },
+                threshold, { threshold = it }, priceOpt, { priceOpt = it }, pctOpt, { pctOpt = it },
+                speedOpt, { speedOpt = it }, amountOpt, { amountOpt = it },
+                volRatioOpt, { volRatioOpt = it }, handOpt, { handOpt = it },
+                largeOrderOpt, { largeOrderOpt = it }, transactionOpt, { transactionOpt = it },
+                aiEnabled, { aiEnabled = it }, aiProvider, { aiProvider = it },
+                aiKey, { aiKey = it }, aiInterval, { aiInterval = it },
+                showKey, { showKey = it }, aiTwoEnabled, { aiTwoEnabled = it },
+                aiTwoProvider, { aiTwoProvider = it }, aiTwoKey, { aiTwoKey = it },
+                showKey2, { showKey2 = it }, { buildConfig() }, configManager)
+        }
+    }
+}
 
-            // ── 配置卡片 ──
-            Section("盯盘配置") {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    LabelField("股票代码", value = code, onValue = { code = it }, enabled = enabled, Modifier.weight(1f))
-                    LabelField("播报间隔", value = interval, onValue = { interval = it }, enabled = enabled, Modifier.weight(1f), suffix = "秒")
-                }
-                Spacer(Modifier.height(10.dp))
-                LabelField("大单阈值", value = threshold, onValue = { threshold = it }, enabled = enabled, modifier = Modifier.fillMaxWidth(), suffix = "手")
-            }
-            Spacer(Modifier.height(12.dp))
+// ═══════════════════════════════════════════
+// 盯盘页
+// ═══════════════════════════════════════════
 
-            // ── 播报内容 ──
-            Section("播报内容") {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column(Modifier.weight(1f)) { Cb("现价", priceOpt, enabled) { priceOpt = it }; Cb("涨幅", pctOpt, enabled) { pctOpt = it }; Cb("涨速", speedOpt, enabled) { speedOpt = it } }
-                    Column(Modifier.weight(1f)) { Cb("成交额", amountOpt, enabled) { amountOpt = it }; Cb("量比", volRatioOpt, enabled) { volRatioOpt = it } }
-                    Column(Modifier.weight(1f)) { Cb("现手", handOpt, enabled) { handOpt = it }; Cb("盘口大单", largeOrderOpt, enabled) { largeOrderOpt = it }; Cb("成交明细", transactionOpt, enabled) { transactionOpt = it } }
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-
-            // ── AI 辅助 ──
-            Section("AI 辅助盘面分析") {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AI_PROVIDERS.forEach { p ->
-                        FilterChip(
-                            selected = aiProvider == p.id,
-                            onClick = { aiProvider = p.id },
-                            label = { Text(p.displayName, fontSize = 12.sp) },
-                            enabled = enabled
-                        )
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                LabelField("API Key", value = aiKey, onValue = { aiKey = it }, enabled = enabled, modifier = Modifier.fillMaxWidth(),
-                    isPassword = !showKey, trailing = { TextButton("显示") { showKey = !showKey } })
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Switch(checked = aiEnabled, onCheckedChange = { aiEnabled = it }, enabled = enabled,
-                            colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
-                        Spacer(Modifier.width(8.dp))
-                        Text("启用AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
-                    }
-                    if (aiEnabled) Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("每", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        LabelField("", value = aiInterval, onValue = { aiInterval = it }, enabled = enabled, modifier = Modifier.width(56.dp), textAlign = TextAlign.Center)
-                        Text("次播报", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+@Composable
+private fun MonitorTab(
+    pad: androidx.compose.foundation.layout.PaddingValues,
+    state: ServiceUiState,
+    enabled: Boolean,
+    ctx: android.content.Context,
+    code: String,
+    buildConfig: () -> AppConfig,
+    configManager: ConfigManager
+) {
+    Column(
+        Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        // 行情区
+        Column {
+            Spacer(Modifier.height(8.dp))
+            if (state.isRunning && state.stockName.isNotEmpty()) {
+                PriceCard(state)
+            } else {
+                // 未启动时的占位
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                    modifier = Modifier.fillMaxWidth().height(200.dp)
+                ) {
+                    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                        Text("📈", fontSize = 48.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Text("点击下方按钮开始盯盘", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
             Spacer(Modifier.height(12.dp))
+            StatusSection(state)
+        }
 
-            // ── 辅 AI 资金面分析 ──
-            Section("辅AI 资金面分析（双AI盘面混沌时触发）") {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AI_PROVIDERS.forEach { p ->
-                        FilterChip(
-                            selected = aiTwoProvider == p.id,
-                            onClick = { aiTwoProvider = p.id },
-                            label = { Text(p.displayName, fontSize = 12.sp) },
-                            enabled = enabled
-                        )
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                LabelField("API Key（留空则复用主AI）", value = aiTwoKey, onValue = { aiTwoKey = it }, enabled = enabled, modifier = Modifier.fillMaxWidth(),
-                    isPassword = !showKey2, trailing = { TextButton("显示") { showKey2 = !showKey2 } })
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Switch(checked = aiTwoEnabled, onCheckedChange = { aiTwoEnabled = it }, enabled = enabled,
-                            colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
-                        Spacer(Modifier.width(8.dp))
-                        Text("启用辅AI（混沌分析）", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
-                    }
+        // 按钮区
+        Column {
+            // 异动通知提示
+            if (state.isRunning && state.statusText.contains("AI异动")) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = StockColors.priceUpBg,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                ) {
+                    Text(
+                        "点击通知栏「关闭提醒」可退出异动播报",
+                        modifier = Modifier.padding(10.dp),
+                        fontSize = 12.sp, color = StockColors.priceUp, textAlign = TextAlign.Center
+                    )
                 }
             }
-            Spacer(Modifier.height(16.dp))
 
-            // ── 主按钮 ──
             Button(
                 onClick = {
                     if (state.isRunning) StockMonitorService.stop(ctx)
                     else {
                         if (code.isBlank()) return@Button
-                        val providerInfo = AI_PROVIDERS.find { it.id == aiProvider } ?: AI_PROVIDERS[0]
-                        val providerInfo2 = AI_PROVIDERS.find { it.id == aiTwoProvider } ?: AI_PROVIDERS[0]
-                        val twoKey = aiTwoKey.trim().ifBlank { aiKey.trim() }
-                        configManager.save(AppConfig(
-                            stockCode = code.trim(),
-                            speakInterval = interval.toIntOrNull() ?: 15,
-                            largeOrderThreshold = threshold.toIntOrNull() ?: 500,
-                            speakPrice = priceOpt, speakPct = pctOpt,
-                            speakCurrentHand = handOpt, speakAmount = amountOpt,
-                            speakVolRatio = volRatioOpt, speakSpeed = speedOpt,
-                            speakLargeOrders = largeOrderOpt,
-                            speakTransactionDetail = transactionOpt,
-                            aiEnabled = aiEnabled, aiApiKey = aiKey.trim(),
-                            aiProvider = aiProvider,
-                            aiApiUrl = providerInfo.url,
-                            aiModel = providerInfo.model,
-                            aiSummaryInterval = aiInterval.toIntOrNull() ?: 5,
-                            aiTwoEnabled = aiTwoEnabled,
-                            aiTwoApiKey = twoKey,
-                            aiTwoProvider = aiTwoProvider,
-                            aiTwoApiUrl = providerInfo2.url,
-                            aiTwoModel = providerInfo2.model,
-                            monitoringActive = true
-                        ))
+                        configManager.save(buildConfig())
                         StockMonitorService.start(ctx)
                     }
                 },
-                modifier = Modifier.fillMaxWidth().height(50.dp),
-                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (state.isRunning) Color(0xFF991B1B) else MaterialTheme.colorScheme.primary
                 )
             ) {
-                Text(if (state.isRunning) "停止盯盘" else "开始自动盯盘",
-                    fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (state.isRunning) "停止盯盘" else "开始自动盯盘",
+                    fontSize = 17.sp, fontWeight = FontWeight.SemiBold
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════
+// 设置页
+// ═══════════════════════════════════════════
+
+@Composable
+private fun SettingsTab(
+    pad: androidx.compose.foundation.layout.PaddingValues,
+    state: ServiceUiState,
+    enabled: Boolean,
+    code: String, onCode: (String) -> Unit,
+    interval: String, onInterval: (String) -> Unit,
+    threshold: String, onThreshold: (String) -> Unit,
+    priceOpt: Boolean, onPrice: (Boolean) -> Unit,
+    pctOpt: Boolean, onPct: (Boolean) -> Unit,
+    speedOpt: Boolean, onSpeed: (Boolean) -> Unit,
+    amountOpt: Boolean, onAmount: (Boolean) -> Unit,
+    volRatioOpt: Boolean, onVolRatio: (Boolean) -> Unit,
+    handOpt: Boolean, onHand: (Boolean) -> Unit,
+    largeOrderOpt: Boolean, onLargeOrder: (Boolean) -> Unit,
+    transactionOpt: Boolean, onTransaction: (Boolean) -> Unit,
+    aiEnabled: Boolean, onAi: (Boolean) -> Unit,
+    aiProvider: String, onAiProvider: (String) -> Unit,
+    aiKey: String, onAiKey: (String) -> Unit,
+    aiInterval: String, onAiInterval: (String) -> Unit,
+    showKey: Boolean, onShowKey: (Boolean) -> Unit,
+    aiTwoEnabled: Boolean, onAiTwo: (Boolean) -> Unit,
+    aiTwoProvider: String, onAiTwoProvider: (String) -> Unit,
+    aiTwoKey: String, onAiTwoKey: (String) -> Unit,
+    showKey2: Boolean, onShowKey2: (Boolean) -> Unit,
+    buildConfig: () -> AppConfig,
+    configManager: ConfigManager
+) {
+    Column(
+        Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp).verticalScroll(rememberScrollState())
+    ) {
+        Spacer(Modifier.height(8.dp))
+
+        // ── 盯盘配置 ──
+        Section("盯盘配置") {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                LabelField("股票代码", value = code, onValue = onCode, enabled = enabled, Modifier.weight(1f))
+                LabelField("播报间隔", value = interval, onValue = onInterval, enabled = enabled, Modifier.weight(1f), suffix = "秒")
+            }
+            Spacer(Modifier.height(10.dp))
+            LabelField("大单阈值", value = threshold, onValue = onThreshold, enabled = enabled, modifier = Modifier.fillMaxWidth(), suffix = "手")
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ── 播报内容 ──
+        Section("播报内容") {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) { Cb("现价", priceOpt, enabled, onPrice); Cb("涨幅", pctOpt, enabled, onPct); Cb("涨速", speedOpt, enabled, onSpeed) }
+                Column(Modifier.weight(1f)) { Cb("成交额", amountOpt, enabled, onAmount); Cb("量比", volRatioOpt, enabled, onVolRatio) }
+                Column(Modifier.weight(1f)) { Cb("现手", handOpt, enabled, onHand); Cb("盘口大单", largeOrderOpt, enabled, onLargeOrder); Cb("成交明细", transactionOpt, enabled, onTransaction) }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ── AI 辅助 ──
+        Section("AI 辅助盘面分析") {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AI_PROVIDERS.forEach { p ->
+                    FilterChip(
+                        selected = aiProvider == p.id,
+                        onClick = { onAiProvider(p.id) },
+                        label = { Text(p.displayName, fontSize = 12.sp) },
+                        enabled = enabled
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            LabelField("API Key", value = aiKey, onValue = onAiKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
+                isPassword = !showKey, trailing = { TextButton("显示") { onShowKey(!showKey) } })
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = aiEnabled, onCheckedChange = onAi, enabled = enabled,
+                        colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
+                    Spacer(Modifier.width(8.dp))
+                    Text("启用AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                }
+                if (aiEnabled) Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("每", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    LabelField("", value = aiInterval, onValue = onAiInterval, enabled = enabled, modifier = Modifier.width(56.dp), textAlign = TextAlign.Center)
+                    Text("次播报", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ── 辅 AI ──
+        Section("辅AI 资金面分析（混沌/长间隔时触发）") {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AI_PROVIDERS.forEach { p ->
+                    FilterChip(
+                        selected = aiTwoProvider == p.id,
+                        onClick = { onAiTwoProvider(p.id) },
+                        label = { Text(p.displayName, fontSize = 12.sp) },
+                        enabled = enabled
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            LabelField("API Key（留空则复用主AI）", value = aiTwoKey, onValue = onAiTwoKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
+                isPassword = !showKey2, trailing = { TextButton("显示") { onShowKey2(!showKey2) } })
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = aiTwoEnabled, onCheckedChange = onAiTwo, enabled = enabled,
+                        colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
+                    Spacer(Modifier.width(8.dp))
+                    Text("启用辅AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ── 保存按钮 ──
+        Button(
+            onClick = { configManager.save(buildConfig()) },
+            modifier = Modifier.fillMaxWidth().height(44.dp),
+            shape = RoundedCornerShape(12.dp),
+            enabled = enabled,
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+        ) {
+            Text("保存配置", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ── AI 日志 ──
+        if (state.isRunning && state.aiLog.isNotEmpty()) {
+            Section("AI 日志") {
+                Text(
+                    state.aiLog.takeLast(30).joinToString("\n"),
+                    fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp
+                )
             }
             Spacer(Modifier.height(16.dp))
-
-            // ── 行情卡片 ──
-            if (state.isRunning && state.stockName.isNotEmpty()) {
-                PriceCard(state)
-                Spacer(Modifier.height(8.dp))
-            }
-
-            // ── 状态栏 ──
-            StatusSection(state)
         }
     }
 }

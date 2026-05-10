@@ -9,15 +9,21 @@ import androidx.core.app.NotificationCompat
 
 object NotificationHelper {
     const val CHANNEL_ID = "stock_monitor"
+    const val ALERT_CHANNEL_ID = "stock_alert"
     const val NOTIFICATION_ID = 1
+    const val ALERT_NOTIFICATION_ID = 2
     const val ACTION_PAUSE = "com.stockspeaker.PAUSE"
     const val ACTION_RESUME = "com.stockspeaker.RESUME"
+    const val ACTION_DISMISS_ALERT = "com.stockspeaker.DISMISS_ALERT"
 
     fun createChannel(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel(
             CHANNEL_ID, "盯盘服务", NotificationManager.IMPORTANCE_DEFAULT
         ).apply { description = "摸鱼听盘后台播报通知" })
+        nm.createNotificationChannel(NotificationChannel(
+            ALERT_CHANNEL_ID, "异动提醒", NotificationManager.IMPORTANCE_HIGH
+        ).apply { description = "大单/涨速异动实时提醒" })
     }
 
     private fun baseBuilder(context: Context) = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -63,5 +69,32 @@ object NotificationHelper {
     fun notify(context: Context, builder: NotificationCompat.Builder) {
         (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
             .notify(NOTIFICATION_ID, builder.build())
+    }
+
+    /** 异动提醒通知：点击"关闭提醒"后发送 DISMISS_ALERT 动作到 Service */
+    fun buildAlert(context: Context, text: String): NotificationCompat.Builder {
+        val dismissIntent = PendingIntent.getService(context, 3,
+            Intent(context, StockMonitorService::class.java).setAction(ACTION_DISMISS_ALERT),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("异动提醒")
+            .setContentText(text.take(80))
+            .setAutoCancel(true)
+            .setOngoing(false)
+            .addAction(0, "关闭提醒", dismissIntent)
+            .setContentIntent(PendingIntent.getActivity(
+                context, 4, Intent(context, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+    }
+
+    fun notifyAlert(context: Context, builder: NotificationCompat.Builder) {
+        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(ALERT_NOTIFICATION_ID, builder.build())
+    }
+
+    fun cancelAlert(context: Context) {
+        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .cancel(ALERT_NOTIFICATION_ID)
     }
 }

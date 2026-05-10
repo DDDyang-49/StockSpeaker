@@ -139,4 +139,50 @@ object StockFetcher {
         }
         return null
     }
+
+    /** 拉取近N日日K线，返回格式化文本供AI分析 */
+    fun fetchDailyHistoryText(code: String, count: Int = 5): String {
+        try {
+            val prefix = getMarketPrefix(code)
+            val url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=$prefix,day,,,$count,qfq"
+            val request = Request.Builder().url(url).build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: return ""
+            val json = body.substringAfter("kline_dayqfq=").trim()
+            val dayPattern = Regex("\"qfqday\":\\[(.*?)\\]")
+            val match = dayPattern.find(json) ?: return ""
+            val entries = match.groupValues[1].split("],[").takeLast(count)
+            val lines = mutableListOf<String>()
+            for (entry in entries) {
+                val parts = entry.trim('"', '[', ']').split(",").map { it.trim('"') }
+                if (parts.size >= 5) {
+                    val date = parts[0].takeLast(5)
+                    val open = parts[1].toDoubleOrNull() ?: continue
+                    val close = parts[4].toDoubleOrNull() ?: continue
+                    val high = parts[3].toDoubleOrNull() ?: 0.0
+                    val low = parts[2].toDoubleOrNull() ?: 0.0
+                    val chg = ((close - open) / open * 100).let { if (it >= 0) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}" }
+                    lines.add("$date O${"%.2f".format(open)} H${"%.2f".format(high)} L${"%.2f".format(low)} C${"%.2f".format(close)}($chg%)")
+                }
+            }
+            return lines.joinToString("；")
+        } catch (_: Exception) { return "" }
+    }
+
+    /** 拉取上证指数实时数据 */
+    fun fetchShanghaiIndexText(): String {
+        try {
+            val url = "https://qt.gtimg.cn/q=sh000001"
+            val request = Request.Builder().url(url).build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: return ""
+            val line = body.split(";").firstOrNull { "=" in it } ?: return ""
+            val arr = line.substringAfter("=").trim('"').split("~")
+            if (arr.size < 50) return ""
+            val price = arr[3].toDoubleOrNull() ?: return ""
+            val pct = arr[32].toDoubleOrNull() ?: 0.0
+            val dir = if (pct > 0) "+" else ""
+            return "上证${price}(${dir}${"%.2f".format(pct)}%)"
+        } catch (_: Exception) { return "" }
+    }
 }
