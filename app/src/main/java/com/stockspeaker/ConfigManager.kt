@@ -8,11 +8,12 @@ data class AiProviderInfo(
     val id: String,
     val displayName: String,
     val url: String,
-    val model: String
+    val model: String,
+    val thinkingModel: String = ""  // 思考模式模型（空表示无独立思考模型）
 )
 
 val AI_PROVIDERS = listOf(
-    AiProviderInfo("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat"),
+    AiProviderInfo("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-v4-flash", "deepseek-reasoner"),
     AiProviderInfo("edgefn", "EdgeFn", "https://api.edgefn.net/v1/chat/completions", "Qwen3-235B-A22B-2507"),
     AiProviderInfo("openai", "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini")
 )
@@ -35,14 +36,16 @@ data class AppConfig(
     val aiApiKey: String = "",
     val aiProvider: String = "deepseek",
     val aiApiUrl: String = "https://api.deepseek.com/v1/chat/completions",
-    val aiModel: String = "deepseek-chat",
+    val aiModel: String = "deepseek-v4-flash",
+    val aiThinkingModel: String = "deepseek-reasoner",
     val aiSummaryInterval: Int = 5,
     // 辅 AI 配置（资金面，可用便宜模型）
     val aiTwoEnabled: Boolean = false,
     val aiTwoApiKey: String = "",
     val aiTwoProvider: String = "deepseek",
     val aiTwoApiUrl: String = "https://api.deepseek.com/v1/chat/completions",
-    val aiTwoModel: String = "deepseek-chat",
+    val aiTwoModel: String = "deepseek-v4-flash",
+    val aiTwoThinkingModel: String = "deepseek-reasoner",
     // 运行状态
     val monitoringActive: Boolean = false
 )
@@ -68,13 +71,15 @@ class ConfigManager(context: Context) {
             aiApiKey = prefs.getString("ai_api_key", "") ?: "",
             aiProvider = prefs.getString("ai_provider", "deepseek") ?: "deepseek",
             aiApiUrl = prefs.getString("ai_api_url", "https://api.deepseek.com/v1/chat/completions") ?: "https://api.deepseek.com/v1/chat/completions",
-            aiModel = prefs.getString("ai_model", "deepseek-chat") ?: "deepseek-chat",
+            aiModel = prefs.getString("ai_model", "deepseek-v4-flash") ?: "deepseek-v4-flash",
+            aiThinkingModel = prefs.getString("ai_thinking_model", "deepseek-reasoner") ?: "deepseek-reasoner",
             aiSummaryInterval = prefs.getInt("ai_summary_interval", 5),
             aiTwoEnabled = prefs.getBoolean("ai_two_enabled", false),
             aiTwoApiKey = prefs.getString("ai_two_api_key", "") ?: "",
             aiTwoProvider = prefs.getString("ai_two_provider", "deepseek") ?: "deepseek",
             aiTwoApiUrl = prefs.getString("ai_two_api_url", "https://api.deepseek.com/v1/chat/completions") ?: "https://api.deepseek.com/v1/chat/completions",
-            aiTwoModel = prefs.getString("ai_two_model", "deepseek-chat") ?: "deepseek-chat",
+            aiTwoModel = prefs.getString("ai_two_model", "deepseek-v4-flash") ?: "deepseek-v4-flash",
+            aiTwoThinkingModel = prefs.getString("ai_two_thinking_model", "deepseek-reasoner") ?: "deepseek-reasoner",
             monitoringActive = prefs.getBoolean("monitoring_active", false)
         )
     }
@@ -98,17 +103,55 @@ class ConfigManager(context: Context) {
             .putString("ai_provider", config.aiProvider)
             .putString("ai_api_url", config.aiApiUrl)
             .putString("ai_model", config.aiModel)
+            .putString("ai_thinking_model", config.aiThinkingModel)
             .putInt("ai_summary_interval", config.aiSummaryInterval)
             .putBoolean("ai_two_enabled", config.aiTwoEnabled)
             .putString("ai_two_api_key", config.aiTwoApiKey)
             .putString("ai_two_provider", config.aiTwoProvider)
             .putString("ai_two_api_url", config.aiTwoApiUrl)
             .putString("ai_two_model", config.aiTwoModel)
+            .putString("ai_two_thinking_model", config.aiTwoThinkingModel)
             .putBoolean("monitoring_active", config.monitoringActive)
             .apply()
     }
 
     fun setMonitoringActive(active: Boolean) {
         prefs.edit().putBoolean("monitoring_active", active).apply()
+    }
+
+    // ── API Key 历史记录（最多5条） ──
+
+    fun getApiKeyHistory(): List<String> {
+        val raw = prefs.getString("api_key_history", "") ?: ""
+        return raw.split("|||").filter { it.isNotBlank() }
+    }
+
+    fun addApiKeyToHistory(key: String) {
+        if (key.isBlank()) return
+        val history = getApiKeyHistory().toMutableList()
+        history.remove(key)
+        history.add(0, key)
+        if (history.size > 5) repeat(history.size - 5) { history.removeAt(history.size - 1) }
+        prefs.edit().putString("api_key_history", history.joinToString("|||")).apply()
+    }
+
+    // ── 股票代码历史记录（最多10条，存"代码|名称"） ──
+
+    fun getStockCodeHistory(): List<Pair<String, String>> {
+        val raw = prefs.getString("stock_code_history", "") ?: ""
+        return raw.split("|||").filter { it.isNotBlank() }.map {
+            val parts = it.split("|", limit = 2)
+            Pair(parts[0], parts.getOrElse(1) { parts[0] })
+        }
+    }
+
+    fun addStockCodeToHistory(code: String, name: String) {
+        if (code.isBlank()) return
+        val entry = "$code|$name"
+        val list = getStockCodeHistory().toMutableList()
+        list.removeAll { it.first == code }
+        list.add(0, Pair(code, name))
+        if (list.size > 10) repeat(list.size - 10) { list.removeAt(list.size - 1) }
+        prefs.edit().putString("stock_code_history", list.joinToString("|||") { "${it.first}|${it.second}" }).apply()
     }
 }

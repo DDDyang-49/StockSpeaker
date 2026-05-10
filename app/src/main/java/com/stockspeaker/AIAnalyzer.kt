@@ -49,7 +49,8 @@ data class AiConfig(
     val enabled: Boolean = false,
     val apiKey: String = "",
     val apiUrl: String = "https://api.deepseek.com/v1/chat/completions",
-    val model: String = "deepseek-chat",
+    val model: String = "deepseek-v4-flash",
+    val thinkingModel: String = "deepseek-reasoner",
     val summaryInterval: Int = 5
 )
 
@@ -314,21 +315,21 @@ class AIAnalyzer(
             var resultA: StanceResult? = null
             var resultB: StanceResult? = null
 
-            // AI-A：技术面（主 AI，通常用好模型）
+            // AI-A：技术面（思考模式，深度推理）
             dualExecutor.execute {
                 try {
-                    val r = callAiForStance(configA, buildTechPrompt(snapshots, dailyHistory, shanghaiIndex))
+                    val r = callAiForStance(configA, buildTechPrompt(snapshots, dailyHistory, shanghaiIndex), useThinking = true)
                     resultA = r
                     onLog("双AI-A: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                 } catch (_: Exception) { onLog("双AI-A: 异常") }
                 latch.countDown()
             }
 
-            // AI-B：资金面（辅 AI，可用便宜模型）
+            // AI-B：资金面（快速模式，便宜模型）
             if (useB) {
                 dualExecutor.execute {
                     try {
-                        val r = callAiForStance(configB, buildFundPrompt(snapshots, dailyHistory, shanghaiIndex))
+                        val r = callAiForStance(configB, buildFundPrompt(snapshots, dailyHistory, shanghaiIndex), useThinking = false)
                         resultB = r
                         onLog("双AI-B: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                     } catch (_: Exception) { onLog("双AI-B: 异常") }
@@ -393,20 +394,26 @@ class AIAnalyzer(
 
     // ── 调用 AI 获取结构化立场 ──
 
-    private fun callAiForStance(config: AiConfig, prompt: String): StanceResult? {
+    private fun callAiForStance(config: AiConfig, prompt: String, useThinking: Boolean = false): StanceResult? {
         val systemPrompt = "你是一个短线盘面分析助手。只看多空方向，不做完整分析。" +
             "必须严格按JSON格式输出：{\"stance\":1,\"reason\":\"简要理由\"}。" +
             "stance: 1=偏多, 0=震荡, -1=偏空。reason不超过15字。不要输出任何其他内容。"
 
+        // 思考模式仅用于主AI的复杂技术分析，辅AI保持快速
+        val model = if (useThinking && config.thinkingModel.isNotBlank()) {
+            onLog("双AI: 启用思考模式 ${config.thinkingModel}")
+            config.thinkingModel
+        } else config.model
+
         return try {
             val json = """
                 |{
-                |  "model": "${config.model}",
+                |  "model": "${model}",
                 |  "messages": [
                 |    {"role": "system", "content": "${toJsonStr(systemPrompt)}"},
                 |    {"role": "user", "content": ${toJsonStr(prompt)}}
                 |  ],
-                |  "max_tokens": 40,
+                |  "max_tokens": 60,
                 |  "temperature": 0.3
                 |}
             """.trimMargin()

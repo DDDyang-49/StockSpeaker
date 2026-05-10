@@ -27,16 +27,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -143,9 +147,11 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
             speakTransactionDetail = transactionOpt,
             aiEnabled = aiEnabled, aiApiKey = aiKey.trim(),
             aiProvider = aiProvider, aiApiUrl = pi.url, aiModel = pi.model,
+            aiThinkingModel = pi.thinkingModel,
             aiSummaryInterval = aiInterval.toIntOrNull() ?: 5,
             aiTwoEnabled = aiTwoEnabled, aiTwoApiKey = twoKey,
             aiTwoProvider = aiTwoProvider, aiTwoApiUrl = pi2.url, aiTwoModel = pi2.model,
+            aiTwoThinkingModel = pi2.thinkingModel,
             monitoringActive = true
         )
     }
@@ -279,14 +285,19 @@ private fun MonitorTab(
                         val rawCode = code.trim()
                         if (rawCode.isBlank()) return@Button
                         if (rawCode.all { it.isDigit() }) {
-                            configManager.save(buildConfig())
+                            val cfg = buildConfig()
+                            configManager.save(cfg)
+                            configManager.addStockCodeToHistory(cfg.stockCode, cfg.stockCode)
                             StockMonitorService.start(ctx)
                         } else {
                             Thread {
                                 val result = StockFetcher.searchStock(rawCode)
                                 val resolved = result?.first ?: rawCode
+                                val name = result?.second ?: rawCode
                                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                    configManager.save(buildConfig().copy(stockCode = resolved))
+                                    val cfg = buildConfig().copy(stockCode = resolved)
+                                    configManager.save(cfg)
+                                    configManager.addStockCodeToHistory(resolved, name)
                                     StockMonitorService.start(ctx)
                                 }
                             }.start()
@@ -341,6 +352,17 @@ private fun SettingsTab(
     buildConfig: () -> AppConfig,
     configManager: ConfigManager
 ) {
+    val apiKeyHistory = remember { configManager.getApiKeyHistory() }
+    val codeHistory = remember { configManager.getStockCodeHistory() }
+    var apiKeyExpanded by remember { mutableStateOf(false) }
+    var apiKey2Expanded by remember { mutableStateOf(false) }
+    var codeExpanded by remember { mutableStateOf(false) }
+
+    fun maskKey(k: String): String {
+        if (k.length <= 8) return k
+        return k.take(4) + "..." + k.takeLast(4)
+    }
+
     Column(
         Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp).verticalScroll(rememberScrollState())
     ) {
@@ -349,7 +371,22 @@ private fun SettingsTab(
         // ── 盯盘配置 ──
         Section("盯盘配置") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                LabelField("代码/名称", value = code, onValue = onCode, enabled = enabled, Modifier.weight(1f))
+                // 代码输入 + 历史下拉
+                Box(Modifier.weight(1f)) {
+                    LabelField("代码/名称", value = code, onValue = onCode, enabled = enabled, Modifier.fillMaxWidth(),
+                        trailing = if (codeHistory.isNotEmpty()) {
+                            { IconButton(onClick = { codeExpanded = true }) { Icon(Icons.Filled.ArrowDropDown, "历史") } }
+                        } else null
+                    )
+                    DropdownMenu(expanded = codeExpanded, onDismissRequest = { codeExpanded = false }) {
+                        codeHistory.forEach { (c, n) ->
+                            DropdownMenuItem(
+                                text = { Text(if (n != c) "$n ($c)" else c, fontSize = 13.sp) },
+                                onClick = { onCode(c); codeExpanded = false }
+                            )
+                        }
+                    }
+                }
                 LabelField("播报间隔", value = interval, onValue = onInterval, enabled = enabled, Modifier.weight(1f), suffix = "秒")
             }
             Spacer(Modifier.height(10.dp))
@@ -380,8 +417,27 @@ private fun SettingsTab(
                 }
             }
             Spacer(Modifier.height(10.dp))
-            LabelField("API Key", value = aiKey, onValue = onAiKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
-                isPassword = !showKey, trailing = { TextButton("显示") { onShowKey(!showKey) } })
+            // API Key + 历史下拉
+            Box(Modifier.fillMaxWidth()) {
+                LabelField("API Key", value = aiKey, onValue = onAiKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
+                    isPassword = !showKey, trailing = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (apiKeyHistory.isNotEmpty()) {
+                                IconButton(onClick = { apiKeyExpanded = true }) { Icon(Icons.Filled.ArrowDropDown, "历史") }
+                            }
+                            TextButton("显示") { onShowKey(!showKey) }
+                        }
+                    }
+                )
+                DropdownMenu(expanded = apiKeyExpanded, onDismissRequest = { apiKeyExpanded = false }) {
+                    apiKeyHistory.forEach { k ->
+                        DropdownMenuItem(
+                            text = { Text(maskKey(k), fontSize = 11.sp, fontFamily = FontFamily.Monospace) },
+                            onClick = { onAiKey(k); apiKeyExpanded = false }
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -412,8 +468,27 @@ private fun SettingsTab(
                 }
             }
             Spacer(Modifier.height(10.dp))
-            LabelField("API Key（留空则复用主AI）", value = aiTwoKey, onValue = onAiTwoKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
-                isPassword = !showKey2, trailing = { TextButton("显示") { onShowKey2(!showKey2) } })
+            // 辅AI Key + 历史下拉
+            Box(Modifier.fillMaxWidth()) {
+                LabelField("API Key（留空则复用主AI）", value = aiTwoKey, onValue = onAiTwoKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
+                    isPassword = !showKey2, trailing = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (apiKeyHistory.isNotEmpty()) {
+                                IconButton(onClick = { apiKey2Expanded = true }) { Icon(Icons.Filled.ArrowDropDown, "历史") }
+                            }
+                            TextButton("显示") { onShowKey2(!showKey2) }
+                        }
+                    }
+                )
+                DropdownMenu(expanded = apiKey2Expanded, onDismissRequest = { apiKey2Expanded = false }) {
+                    apiKeyHistory.forEach { k ->
+                        DropdownMenuItem(
+                            text = { Text(maskKey(k), fontSize = 11.sp, fontFamily = FontFamily.Monospace) },
+                            onClick = { onAiTwoKey(k); apiKey2Expanded = false }
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -428,7 +503,12 @@ private fun SettingsTab(
 
         // ── 保存按钮 ──
         Button(
-            onClick = { configManager.save(buildConfig()) },
+            onClick = {
+                val cfg = buildConfig()
+                configManager.save(cfg)
+                if (cfg.aiApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiApiKey)
+                if (cfg.aiTwoApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiTwoApiKey)
+            },
             modifier = Modifier.fillMaxWidth().height(44.dp),
             shape = RoundedCornerShape(12.dp),
             enabled = enabled,

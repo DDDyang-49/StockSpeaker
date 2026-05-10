@@ -15,6 +15,7 @@ object NotificationHelper {
     const val ACTION_PAUSE = "com.stockspeaker.PAUSE"
     const val ACTION_RESUME = "com.stockspeaker.RESUME"
     const val ACTION_DISMISS_ALERT = "com.stockspeaker.DISMISS_ALERT"
+    const val ACTION_DISMISS_ALERT_OPEN = "com.stockspeaker.DISMISS_ALERT_OPEN"
 
     fun createChannel(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -71,10 +72,13 @@ object NotificationHelper {
             .notify(NOTIFICATION_ID, builder.build())
     }
 
-    /** 异动提醒通知：点击"关闭提醒"后发送 DISMISS_ALERT 动作到 Service */
+    /** 异动提醒通知：点击通知主体关闭异动并打开App，"关闭提醒"按钮仅关闭异动 */
     fun buildAlert(context: Context, text: String): NotificationCompat.Builder {
         val dismissIntent = PendingIntent.getService(context, 3,
             Intent(context, StockMonitorService::class.java).setAction(ACTION_DISMISS_ALERT),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val dismissOpenIntent = PendingIntent.getService(context, 5,
+            Intent(context, StockMonitorService::class.java).setAction(ACTION_DISMISS_ALERT_OPEN),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
@@ -86,9 +90,7 @@ object NotificationHelper {
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .addAction(0, "关闭提醒", dismissIntent)
-            .setContentIntent(PendingIntent.getActivity(
-                context, 4, Intent(context, MainActivity::class.java),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+            .setContentIntent(dismissOpenIntent)
     }
 
     fun notifyAlert(context: Context, builder: NotificationCompat.Builder) {

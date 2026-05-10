@@ -50,7 +50,10 @@ class StockMonitorService : Service() {
     private var lastSpeakTime = 0L
     private var lastTotalVol = 0
     private var lastChangePct = 0.0
-    private var lastAlertSpeakTime = 0L
+    private var lastAlertSpeakTime = 0L  // 最近一次异动时间（用于跟进逻辑，非冷却）
+    private var lastHandAlertTime = 0L    // 大单异动冷却
+    private var lastSpeedAlertTime = 0L   // 涨速异动冷却
+    private var lastPatternAlertTime = 0L // AI异动冷却
     private var alertFollowUpActive = false
     private var followUpCount = 0
     private var normalBroadcastCount = 0
@@ -88,10 +91,10 @@ class StockMonitorService : Service() {
         config = cm.load()
         aiAnalyzer = AIAnalyzer({
             val c = cm.load()
-            AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, apiUrl = c.aiApiUrl, model = c.aiModel, summaryInterval = c.aiSummaryInterval)
+            AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, apiUrl = c.aiApiUrl, model = c.aiModel, thinkingModel = c.aiThinkingModel, summaryInterval = c.aiSummaryInterval)
         }, onLog = { msg -> aiLog(msg) }, aiTwoConfigProvider = {
             val c = cm.load()
-            AiConfig(enabled = c.aiTwoEnabled, apiKey = c.aiTwoApiKey, apiUrl = c.aiTwoApiUrl, model = c.aiTwoModel)
+            AiConfig(enabled = c.aiTwoEnabled, apiKey = c.aiTwoApiKey, apiUrl = c.aiTwoApiUrl, model = c.aiTwoModel, thinkingModel = c.aiTwoThinkingModel)
         })
         ttsEngine = TtsEngine(this, cacheDir) {}
         ttsEngine.init()
@@ -107,6 +110,19 @@ class StockMonitorService : Service() {
                 lastPostAlertData = null; batchQueue.clear()
                 aiLog("🔕 关闭异动提醒")
                 updateNotif(); return START_STICKY
+            }
+            NotificationHelper.ACTION_DISMISS_ALERT_OPEN -> {
+                ttsEngine.stop(); NotificationHelper.cancelAlert(this)
+                alertFollowUpActive = false; postAlertPhase = 0
+                lastPostAlertData = null; batchQueue.clear()
+                aiLog("🔕 关闭异动提醒")
+                updateNotif()
+                // 同时打开App
+                val openIntent = Intent(this, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }
+                startActivity(openIntent)
+                return START_STICKY
             }
         }
         if (isRunning) return START_STICKY
@@ -181,23 +197,25 @@ class StockMonitorService : Service() {
 
         // ═══════════════════════════════════════
         // 轨道1：实时异动（最高优先级，可打断一切）
+        // 每类异动独立冷却30秒，不同类型可分别触发
         // ═══════════════════════════════════════
+        val alertCooldownMs = 30000L
         var alertSpoken = false
         var alertText = ""
-        if (!alertSpoken && currentHand >= config.largeOrderThreshold) {
+        if (currentHand >= config.largeOrderThreshold && now - lastHandAlertTime >= alertCooldownMs) {
             val action = when { speed > 0.3 -> "大单买入"; speed < -0.3 -> "大单卖出"; else -> "大单成交" }
             alertText = "注意！${spokenHand(currentHand)}$action！"
             ttsEngine.speakAlert(alertText)
-            alertSpoken = true; lastAlertSpeakTime = now; alertFollowUpActive = false
+            alertSpoken = true; lastHandAlertTime = now; lastAlertSpeakTime = now; alertFollowUpActive = false
         }
-        if (!alertSpoken && absSpeed >= config.speedAlertThreshold) {
+        if (!alertSpoken && absSpeed >= config.speedAlertThreshold && now - lastSpeedAlertTime >= alertCooldownMs) {
             val dir = if (speed > 0) "快速拉升" else "快速下跌"
             val tag = if (speed > 0) "涨幅" else "跌幅"
             alertText = "注意！$dir！${data.name}当前${spokenPrice(data.price)}，${tag}${fmtPct(absSpeed)}%"
             ttsEngine.speakAlert(alertText)
-            alertSpoken = true; lastAlertSpeakTime = now; alertFollowUpActive = true; followUpCount = 0
+            alertSpoken = true; lastSpeedAlertTime = now; lastAlertSpeakTime = now; alertFollowUpActive = true; followUpCount = 0
         }
-        if (!alertSpoken) {
+        if (!alertSpoken && now - lastPatternAlertTime >= alertCooldownMs) {
             try {
                 val snapshot = MarketSnapshot(now, data.price, data.changePct, speed, data.volRatio,
                     data.amountStr, currentHand, data.largeAsksSpeak.size, data.largeBidsSpeak.size)
@@ -206,7 +224,7 @@ class StockMonitorService : Service() {
                     alertText = patterns.joinToString("") { it.speakText }
                     aiLog("AI异动: ${patterns.map { it.type.name }.joinToString()}")
                     ttsEngine.speakAlert(alertText)
-                    alertSpoken = true; lastAlertSpeakTime = now; alertFollowUpActive = false
+                    alertSpoken = true; lastPatternAlertTime = now; lastAlertSpeakTime = now; alertFollowUpActive = false
                 }
             } catch (_: Exception) {}
         }
