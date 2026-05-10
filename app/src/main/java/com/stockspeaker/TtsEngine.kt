@@ -2,7 +2,10 @@ package com.stockspeaker
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -32,6 +35,8 @@ class TtsEngine(
     var isSpeaking = false; private set
 
     private val handler = Handler(Looper.getMainLooper())
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    @Volatile private var hasAudioFocus = false
     private val netExecutor = Executors.newSingleThreadExecutor()
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -43,6 +48,54 @@ class TtsEngine(
     private var speechChunks = mutableListOf<String>()
     private var speechCursor = 0
     private var engineScanIndex = -1
+
+    // ── 音频焦点（播报时自动降低其他音量，播完复原） ──
+
+    private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS -> { stop(); abandonAudioFocus() }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> stop()
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {} // 我们请求MAY_DUCK，这是预期行为
+            AudioManager.AUDIOFOCUS_GAIN -> {} // 焦点恢复，不做额外处理
+        }
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        if (hasAudioFocus) return true
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build())
+                .setOnAudioFocusChangeListener(focusChangeListener)
+                .build()
+            audioManager.requestAudioFocus(focusRequest)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(focusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+        }
+        hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        return hasAudioFocus
+    }
+
+    private fun abandonAudioFocus() {
+        if (!hasAudioFocus) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build())
+                .setOnAudioFocusChangeListener(focusChangeListener)
+                .build()
+            audioManager.abandonAudioFocusRequest(focusRequest)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(focusChangeListener)
+        }
+        hasAudioFocus = false
+    }
 
     // ── 初始化 ──
 
@@ -99,6 +152,10 @@ class TtsEngine(
         }
         if (ok) {
             tts?.setSpeechRate(0.9f)
+            tts?.setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build())
             tts?.setOnUtteranceProgressListener(ttsListener)
             isReady = true
             engineScanIndex = -1
@@ -118,6 +175,7 @@ class TtsEngine(
             if (speechCursor >= speechChunks.size) {
                 isSpeaking = false
                 handler.removeCallbacks(speakingTimeout)
+                abandonAudioFocus()
             }
         }
         @Deprecated("Deprecated in Java")
@@ -128,6 +186,7 @@ class TtsEngine(
     private fun onTtsError() {
         isSpeaking = false; speechChunks.clear(); speechCursor = 0
         handler.removeCallbacks(speakingTimeout)
+        abandonAudioFocus()
         onLog("⚠ TTS onError")
     }
 
@@ -136,6 +195,7 @@ class TtsEngine(
     /** 异动播报：中断当前语音，立即插播 */
     fun speakAlert(text: String) {
         stop()
+        requestAudioFocus()
         onLog("⚠ 异动: ${text.take(40)}...")
         if (isReady) {
             isSpeaking = true
@@ -158,6 +218,8 @@ class TtsEngine(
         val sentences = text.split(Regex("(?<=[。！？])"))
             .map { it.trim() }.filter { it.isNotEmpty() }
         if (sentences.isEmpty()) return false
+
+        requestAudioFocus()
 
         speechChunks.clear(); speechChunks.addAll(sentences)
         speechCursor = 0
@@ -184,6 +246,7 @@ class TtsEngine(
         mediaPlayer?.stop(); mediaPlayer?.release(); mediaPlayer = null
         isSpeaking = false; speechChunks.clear(); speechCursor = 0
         handler.removeCallbacks(speakingTimeout)
+        abandonAudioFocus()
     }
 
     fun shutdown() {
@@ -287,11 +350,13 @@ class TtsEngine(
                 setDataSource(file.absolutePath)
                 setOnCompletionListener {
                     isSpeaking = false; handler.removeCallbacks(speakingTimeout)
+                    abandonAudioFocus()
                     release(); if (mediaPlayer === this) mediaPlayer = null
                     file.delete()
                 }
                 setOnErrorListener { mp, what, extra ->
                     isSpeaking = false; handler.removeCallbacks(speakingTimeout)
+                    abandonAudioFocus()
                     onLog("⚠ 播放失败 what=$what"); mp.release()
                     if (mediaPlayer === mp) mediaPlayer = null; file.delete(); true
                 }
@@ -308,6 +373,7 @@ class TtsEngine(
             isSpeaking = false
             try { tts?.stop(); mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) {}
             mediaPlayer = null
+            abandonAudioFocus()
         }
     }
 

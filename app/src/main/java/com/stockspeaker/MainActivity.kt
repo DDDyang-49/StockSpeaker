@@ -276,9 +276,21 @@ private fun MonitorTab(
                 onClick = {
                     if (state.isRunning) StockMonitorService.stop(ctx)
                     else {
-                        if (code.isBlank()) return@Button
-                        configManager.save(buildConfig())
-                        StockMonitorService.start(ctx)
+                        val rawCode = code.trim()
+                        if (rawCode.isBlank()) return@Button
+                        if (rawCode.all { it.isDigit() }) {
+                            configManager.save(buildConfig())
+                            StockMonitorService.start(ctx)
+                        } else {
+                            Thread {
+                                val result = StockFetcher.searchStock(rawCode)
+                                val resolved = result?.first ?: rawCode
+                                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                    configManager.save(buildConfig().copy(stockCode = resolved))
+                                    StockMonitorService.start(ctx)
+                                }
+                            }.start()
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(52.dp),
@@ -337,7 +349,7 @@ private fun SettingsTab(
         // ── 盯盘配置 ──
         Section("盯盘配置") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                LabelField("股票代码", value = code, onValue = onCode, enabled = enabled, Modifier.weight(1f))
+                LabelField("代码/名称", value = code, onValue = onCode, enabled = enabled, Modifier.weight(1f))
                 LabelField("播报间隔", value = interval, onValue = onInterval, enabled = enabled, Modifier.weight(1f), suffix = "秒")
             }
             Spacer(Modifier.height(10.dp))

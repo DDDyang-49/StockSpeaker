@@ -87,6 +87,29 @@ object StockFetcher {
         .readTimeout(3, TimeUnit.SECONDS)
         .build()
 
+    /** 根据股票名称搜索代码，返回 (代码, 名称) 或 null */
+    fun searchStock(keyword: String): Pair<String, String>? {
+        if (keyword.isBlank()) return null
+        // 纯数字直接当作代码
+        if (keyword.all { it.isDigit() }) return Pair(keyword, keyword)
+        try {
+            val url = "https://smartbox.gtimg.cn/s3/?q=${java.net.URLEncoder.encode(keyword, "UTF-8")}&t=all"
+            val request = Request.Builder().url(url).build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: return null
+            // 格式: ..."1^股票名~代码~市场代码~..."
+            val match = Regex("~(\\d{6})~").find(body)
+            if (match != null) {
+                val code = match.groupValues[1]
+                // 提取名称
+                val nameMatch = Regex("\\^(.*?)~$code").find(body)
+                val name = nameMatch?.groupValues?.get(1) ?: code
+                return Pair(code, name)
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
     private fun getMarketPrefix(code: String): String = when {
         code.startsWith("6") -> "sh$code"
         code.startsWith("0") || code.startsWith("3") -> "sz$code"

@@ -69,23 +69,97 @@ class AIAnalyzer(
         .build()
     @Volatile private var cachedDualAnalysis: String? = null
 
-    // ── 技术角度标签（供 prompt 参考，不随机选择，让 AI 自行判断重点） ──
+    // ═══════════════════════════════════════════
+    // Persona × Task × Signal 三维播报系统
+    // 维度1：人设（谁在说）— 8种，控制语气
+    // 维度2：分析任务（聊什么话题）— 16种，继承原版15风格
+    // 维度3：技术信号（看到就顺带提）— 12种，v1.0.7深度分析
+    // ═══════════════════════════════════════════
 
-    private val techAngles = listOf(
-        "量价关系", "盘口博弈", "资金意图", "技术形态",
-        "分时特征", "短线情绪", "主力动向", "关键价位",
-        "趋势强弱", "变盘信号", "支撑压力", "筹码分布"
+    // ── 维度1：8 种人设 ──
+    private val personas = listOf(
+        "你是老股民，语气像跟朋友喝酒聊盘面。口语化，直接说出判断，不加修饰。",
+        "你是游资操盘手，短线博弈视角。说话干脆利落，一针见血，不废话。",
+        "你是技术派交易员，从K线和量价角度点评。说话带着实时盯盘的感觉，接地气。",
+        "你是盘口猎人，专盯买卖盘口的微观博弈。从挂单变化推演主力意图，说话警觉犀利。",
+        "你是量化分析师，从数据和概率角度点评。冷静理性，关注统计规律和异常值。",
+        "你是基本面派，从价值角度审视盘面。理性沉稳，关注估值和行业逻辑。",
+        "你是趋势交易者，从波浪和动能角度点评。关注方向延续性，说话果断。",
+        "你是逆向思考者，习惯反向解读盘面信号。在大家都看多时找空头理由，反之亦然。"
+    )
+    private var personaIdx = 0
+
+    // ── 维度2：16 种分析任务（原版风格，决定"聊什么话题"） ──
+    private data class AnalysisTask(val label: String, val instruction: String)
+
+    private val analysisTasks = listOf(
+        AnalysisTask("股价走势", "用2-3句口语分析该股当前的价格波动特征和走势状态。"),
+        AnalysisTask("消息面", "用2-3句口语聊聊该股当前可能受什么消息面影响。直接说看法，不要'可能'。"),
+        AnalysisTask("买卖点", "用2-3句口语说说当前买卖时机判断，像跟朋友交流操作思路。直接了当。"),
+        AnalysisTask("资金动向", "用2-3句口语分析当前资金流向和主力意图。"),
+        AnalysisTask("技术形态", "用2-3句口语分析当前技术形态和趋势信号。"),
+        AnalysisTask("风险机会", "用2-3句口语提示当前风险和机会在哪里。直接说重点。"),
+        AnalysisTask("盘口博弈", "用2-3句口语分析当前买卖盘口力量对比和多空博弈状态。"),
+        AnalysisTask("量价关系", "用2-3句口语分析当前成交量与价格走势的配合关系，有背离必须说。"),
+        AnalysisTask("主力意图", "用2-3句口语推测当前主力资金的操作意图和动向。"),
+        AnalysisTask("短线情绪", "用2-3句口语分析当前短线资金情绪和市场氛围。"),
+        AnalysisTask("异动解读", "用2-3句口语解读近期盘中异动背后可能的原因和含义。"),
+        AnalysisTask("大单跟踪", "用2-3句口语跟踪分析近期大单资金流向和含义。"),
+        AnalysisTask("板块联动", "用2-3句口语分析该股与所属板块的联动关系和强弱对比。"),
+        AnalysisTask("分时特征", "用2-3句口语分析当日分时走势的特征和关键价位。"),
+        AnalysisTask("综合研判", "用2-3句口语综合量价、盘口、趋势、情绪，给出最核心的1个判断。"),
+        AnalysisTask("变盘预警", "用2-3句口语判断当前是否接近变盘节点——结合量价背离、盘口异动、关键位攻防。")
+    )
+    private var taskOrder = mutableListOf<Int>()
+    private var taskCursor = 0
+
+    private fun nextTask(): AnalysisTask {
+        if (taskCursor >= taskOrder.size) {
+            taskOrder = (analysisTasks.indices).toMutableList().apply { shuffle() }
+            val prevLast = if (::_lastTaskIdx.isInitialized) _lastTaskIdx else -1
+            if (taskOrder.size > 1 && taskOrder.first() == prevLast) {
+                val tmp = taskOrder[0]; taskOrder[0] = taskOrder[1]; taskOrder[1] = tmp
+            }
+            taskCursor = 0
+        }
+        val task = analysisTasks[taskOrder[taskCursor]]
+        _lastTaskIdx = taskOrder[taskCursor]
+        taskCursor++
+        return task
+    }
+    private var _lastTaskIdx = -1
+
+    // ── 维度3：12 个技术信号提示（"数据里看到就顺带提一嘴"） ──
+    private val techSignals = listOf(
+        "量价背离（价升量缩/价跌量增/放量滞涨/缩量横盘）",
+        "盘口多空失衡（卖盘压单明显多于买盘托单，或反之）",
+        "主力吃货或出货迹象（大单成交方向+密度异常）",
+        "触及关键价位（前高前低/整数关口，突破或受阻）",
+        "趋势动能变化（涨跌加速还是衰减，是否有乏力迹象）",
+        "变盘前兆（量价背离+形态破位+盘口异动共振）",
+        "情绪极端（追涨过度或恐慌抛售，投机氛围异常）",
+        "经典技术形态（双底双顶/头肩/三角形/旗形等）",
+        "资金真实意图可疑（流入但价不涨=诱多，流出但价不跌=洗盘）",
+        "筹码结构异常（当前区间套牢盘密集或获利盘涌出压力）",
+        "波浪拐点（上升浪见顶或调整浪结束，浪型完整度）",
+        "多信号共振（多个技术信号同时指向同一方向时重点说）"
     )
 
-    // ── AI 人格轮换（4种角色，让点评语气多变） ──
-
-    private val personalities = listOf(
-        "你是老股民，用口语点评盘面。像朋友聊天那样自然，直接说出判断。",
-        "你是游资操盘手，从短线博弈角度犀利点评。说话干脆利落，一针见血。",
-        "你是基本面研究员，从价值角度审视盘面异动。理性冷静，言之有物。",
-        "你是技术派交易员，从K线和量价角度点评。说话带着盯盘的感觉，接地气。"
-    )
-    private var personalityIndex = 0
+    // ── 组装系统提示词：人设 + 任务 + 顺带信号 ──
+    private fun pickPersonaAndTask(): Pair<String, String> {
+        val persona = personas[personaIdx % personas.size]
+        personaIdx++
+        val task = nextTask()
+        // 随机抽 3 个技术信号作为"顺带提示"
+        val hints = techSignals.shuffled().take(3).joinToString("；")
+        val prompt = buildString {
+            append(persona)
+            append("本次任务是【${task.label}】——${task.instruction}")
+            append("基于盘面数据完成分析任务。另外数据中如果明显出现以下信号，顺带提一嘴：${hints}。")
+            append("不跑题，用2-4句口语完成。不超过80字。不要'当前''根据数据'套话，直接说出判断。")
+        }
+        return Pair(persona, prompt)
+    }
 
     // ── 消息面池（30+条，按时间+股票代码混合选择，保证多变） ──
 
@@ -619,18 +693,8 @@ class AIAnalyzer(
             return
         }
 
-        // 轮换人格
-        val persona = personalities[personalityIndex % personalities.size]
-        personalityIndex++
-
-        val systemPrompt = buildString {
-            append(persona)
-            append("你盯盘20年，精通量价关系、波浪结构、盘口博弈、筹码分布。")
-            append("从技术面+盘口博弈角度，挑盘面最值得说的1-2个信号点评。")
-            append("如果看到量价背离、关键位突破/失守、盘口异动，优先说。")
-            append("用2-4句口语，像跟朋友聊盘面。不超过80字。")
-            append("不要'当前''根据数据'套话，直接说出判断。")
-        }
+        // 人设 + 分析任务 + 技术信号
+        val (_, systemPrompt) = pickPersonaAndTask()
 
         apiExecutor.execute {
             try {
@@ -686,9 +750,12 @@ class AIAnalyzer(
         val prompt = buildPostAlertPrompt(alertText, snapshots)
         if (prompt.isEmpty()) { callback(null); return }
 
-        val persona = personalities[personalityIndex % personalities.size]
-        personalityIndex++
-        val systemPrompt = "${persona}用2-3句口语复盘这波异动，不超过60字。像老股民看到异动后的第一反应。"
+        val (_, systemPrompt) = pickPersonaAndTask()
+        val postAlertPrompt = buildString {
+            append("刚发生异动需要复盘。")
+            append(systemPrompt)
+            append("结合异动背景和当前盘面数据，用2-3句口语给出判断，不超过60字。")
+        }
 
         apiExecutor.execute {
             try {
@@ -697,7 +764,7 @@ class AIAnalyzer(
                     |{
                     |  "model": "${config.model}",
                     |  "messages": [
-                    |    {"role": "system", "content": "${toJsonStr(systemPrompt)}"},
+                    |    {"role": "system", "content": "${toJsonStr(postAlertPrompt)}"},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
                     |  ],
                     |  "max_tokens": 80,
