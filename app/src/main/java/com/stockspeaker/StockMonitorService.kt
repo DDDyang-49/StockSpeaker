@@ -54,8 +54,8 @@ class StockMonitorService : Service() {
     private var lastHandAlertTime = 0L    // 大单异动冷却
     private var lastSpeedAlertTime = 0L   // 涨速异动冷却
     private var lastPatternAlertTime = 0L // AI异动冷却
-    private var alertFollowUpActive = false
-    private var followUpCount = 0
+    private var alertActive = false      // 异动进行中，需等待平复
+    private var alertSettleCount = 0    // 平复计数（连续无异常轮次）
     private var normalBroadcastCount = 0
     private var pendingAiSummary: String? = null
     private var aiRequestInFlight = false
@@ -106,14 +106,14 @@ class StockMonitorService : Service() {
             NotificationHelper.ACTION_RESUME -> { isPaused = false; aiLog("▶ 恢复"); updateNotif(); return START_STICKY }
             NotificationHelper.ACTION_DISMISS_ALERT -> {
                 ttsEngine.stop(); NotificationHelper.cancelAlert(this)
-                alertFollowUpActive = false; postAlertPhase = 0
+                alertActive = false; alertSettleCount = 0; postAlertPhase = 0
                 lastPostAlertData = null; batchQueue.clear()
                 aiLog("🔕 关闭异动提醒")
                 updateNotif(); return START_STICKY
             }
             NotificationHelper.ACTION_DISMISS_ALERT_OPEN -> {
                 ttsEngine.stop(); NotificationHelper.cancelAlert(this)
-                alertFollowUpActive = false; postAlertPhase = 0
+                alertActive = false; alertSettleCount = 0; postAlertPhase = 0
                 lastPostAlertData = null; batchQueue.clear()
                 aiLog("🔕 关闭异动提醒")
                 updateNotif()
@@ -134,6 +134,7 @@ class StockMonitorService : Service() {
         lastFillInTime = 0L; fillInCount = 0; lastDualAnalysisTime = 0L
         postAlertPhase = 0; normalDeferred = false; lastAlertText = ""
         lastPostAlertData = null; batchQueue.clear()
+        alertActive = false; alertSettleCount = 0
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
@@ -204,16 +205,16 @@ class StockMonitorService : Service() {
         var alertText = ""
         if (currentHand >= config.largeOrderThreshold && now - lastHandAlertTime >= alertCooldownMs) {
             val action = when { speed > 0.3 -> "大单买入"; speed < -0.3 -> "大单卖出"; else -> "大单成交" }
-            alertText = "注意！${spokenHand(currentHand)}$action！"
+            alertText = "${alertPrefix()}${spokenHand(currentHand)}$action！"
             ttsEngine.speakAlert(alertText)
-            alertSpoken = true; lastHandAlertTime = now; lastAlertSpeakTime = now; alertFollowUpActive = false
+            alertSpoken = true; lastHandAlertTime = now; lastAlertSpeakTime = now
         }
         if (!alertSpoken && absSpeed >= config.speedAlertThreshold && now - lastSpeedAlertTime >= alertCooldownMs) {
             val dir = if (speed > 0) "快速拉升" else "快速下跌"
             val tag = if (speed > 0) "涨幅" else "跌幅"
-            alertText = "注意！$dir！${data.name}当前${spokenPrice(data.price)}，${tag}${fmtPct(absSpeed)}%"
+            alertText = "${alertPrefix()}$dir！${data.name}当前${spokenPrice(data.price)}，${tag}${fmtPct(absSpeed)}%"
             ttsEngine.speakAlert(alertText)
-            alertSpoken = true; lastSpeedAlertTime = now; lastAlertSpeakTime = now; alertFollowUpActive = true; followUpCount = 0
+            alertSpoken = true; lastSpeedAlertTime = now; lastAlertSpeakTime = now
         }
         if (!alertSpoken && now - lastPatternAlertTime >= alertCooldownMs) {
             try {
@@ -221,16 +222,17 @@ class StockMonitorService : Service() {
                     data.amountStr, currentHand, data.largeAsksSpeak.size, data.largeBidsSpeak.size)
                 val patterns = aiAnalyzer.feed(snapshot)
                 if (patterns.isNotEmpty()) {
-                    alertText = patterns.joinToString("") { it.speakText }
+                    alertText = alertPrefix() + patterns.joinToString("") { it.speakText }
                     aiLog("AI异动: ${patterns.map { it.type.name }.joinToString()}")
                     ttsEngine.speakAlert(alertText)
-                    alertSpoken = true; lastPatternAlertTime = now; lastAlertSpeakTime = now; alertFollowUpActive = false
+                    alertSpoken = true; lastPatternAlertTime = now; lastAlertSpeakTime = now
                 }
             } catch (_: Exception) {}
         }
         if (alertSpoken) {
             NotificationHelper.notifyAlert(this@StockMonitorService,
                 NotificationHelper.buildAlert(this@StockMonitorService, alertText))
+            alertActive = true; alertSettleCount = 0
             postAlertPhase = 1; lastAlertText = alertText
             lastPostAlertData = data; normalDeferred = false
             lastSpeakTime = now; intervalLargeEvents.clear()
@@ -239,21 +241,35 @@ class StockMonitorService : Service() {
             return
         }
 
-        // ── 轨道1b：连续跟报 ──
-        if (alertFollowUpActive && absSpeed >= config.speedAlertThreshold * 0.3) {
-            if (now - lastAlertSpeakTime >= 8000) {
-                val dir = if (speed > 0) "拉升" else "下跌"
-                ttsEngine.speakAlert("${data.name}继续$dir，当前${spokenPrice(data.price)}，${fmtPct(absSpeed)}%")
-                lastAlertSpeakTime = now
-                if (++followUpCount > 30) alertFollowUpActive = false
+        // ── 轨道1b：异动平复等待 ──
+        // 异动触发后持续检测盘面，直到连续3轮（6秒）无异动才进入复盘
+        if (alertActive) {
+            val stillAlertHand = currentHand >= config.largeOrderThreshold
+            val stillAlertSpeed = absSpeed >= config.speedAlertThreshold
+            if (stillAlertHand || stillAlertSpeed) {
+                // 异动持续中，重置平复计数，8秒间隔播报最新状态
+                alertSettleCount = 0
+                if (now - lastAlertSpeakTime >= 8000) {
+                    val update = if (stillAlertHand) {
+                        val action = when { speed > 0.3 -> "大单买入"; speed < -0.3 -> "大单卖出"; else -> "大单成交" }
+                        "${alertPrefix()}${spokenHand(currentHand)}$action！"
+                    } else {
+                        val dir = if (speed > 0) "继续拉升" else "继续下跌"
+                        "${alertPrefix()}${data.name}$dir，涨速${fmtPct(absSpeed)}%"
+                    }
+                    ttsEngine.speakAlert(update)
+                    lastAlertSpeakTime = now
+                }
+                return
             }
-            return
-        } else if (alertFollowUpActive && absSpeed < config.speedAlertThreshold * 0.3) {
-            alertFollowUpActive = false
+            // 当前无异动条件，累计平复轮次
+            alertSettleCount++
+            if (alertSettleCount < 3) return
+            alertActive = false
         }
 
         // ═══════════════════════════════════════
-        // 轨道1c：异动后跟进（涨跌幅 + AI复盘）
+        // 轨道1c：异动后跟进（仅异动平复后执行）
         // ═══════════════════════════════════════
         if (postAlertPhase > 0 && !ttsEngine.isSpeaking) {
             if (postAlertPhase == 1) {
@@ -430,6 +446,13 @@ class StockMonitorService : Service() {
         } else ""
         val full = main + alert + event + detail
         return if (full == "。") null else full
+    }
+
+    // ── 异动前缀（随机切换，确保异动播报有辨识度） ──
+
+    private fun alertPrefix(): String {
+        val prefixes = listOf("注意：", "异动：", "注意注意：", "警报：", "提醒：")
+        return prefixes.random()
     }
 
     // ── 口语格式化 ──
