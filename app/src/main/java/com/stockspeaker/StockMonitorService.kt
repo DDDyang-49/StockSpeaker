@@ -61,6 +61,7 @@ class StockMonitorService : Service() {
     private var changeStyleIndex = 0
     private var priceStyleIndex = 0
     private var speedStyleIndex = 0
+    private var lastDualAnalysisTime = 0L
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private val netExecutor = Executors.newSingleThreadExecutor()
     private val aiLogs = mutableListOf<String>()
@@ -83,7 +84,10 @@ class StockMonitorService : Service() {
         aiAnalyzer = AIAnalyzer({
             val c = cm.load()
             AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, apiUrl = c.aiApiUrl, model = c.aiModel, summaryInterval = c.aiSummaryInterval)
-        }, onLog = { msg -> aiLog(msg) })
+        }, onLog = { msg -> aiLog(msg) }, aiTwoConfigProvider = {
+            val c = cm.load()
+            AiConfig(enabled = c.aiTwoEnabled, apiKey = c.aiTwoApiKey, apiUrl = c.aiTwoApiUrl, model = c.aiTwoModel)
+        })
         ttsEngine = TtsEngine(this, cacheDir) {}
         ttsEngine.init()
     }
@@ -99,7 +103,7 @@ class StockMonitorService : Service() {
         cm.setMonitoringActive(true)
         lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; intervalLargeEvents.clear()
         normalBroadcastCount = 0; pendingAiSummary = null; aiRequestInFlight = false
-        lastFillInTime = 0L; fillInCount = 0
+        lastFillInTime = 0L; fillInCount = 0; lastDualAnalysisTime = 0L
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
@@ -228,6 +232,17 @@ class StockMonitorService : Service() {
                     fillInCount++
                     lastFillInTime = now
                     requestMarketPulse(data)
+                } else if (config.aiEnabled && config.aiTwoEnabled && pendingAiSummary == null && !aiRequestInFlight) {
+                    // 轨道3：双AI混沌分析（盘面混沌时触发，冷却60秒）
+                    if (aiAnalyzer.shouldTriggerDualAnalysis() && now - lastDualAnalysisTime >= 60000) {
+                        lastDualAnalysisTime = now
+                        aiAnalyzer.generateDualAnalysis(aiAnalyzer.getRecentSnapshots()) { text ->
+                            if (text != null) handler.post {
+                                aiLog("双AI: ${text.take(30)}...")
+                                ttsEngine.speak(text)
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -112,6 +112,10 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     var aiKey by remember { mutableStateOf(cfg.aiApiKey) }
     var aiInterval by remember { mutableStateOf(cfg.aiSummaryInterval.toString()) }
     var showKey by remember { mutableStateOf(false) }
+    var aiTwoEnabled by remember { mutableStateOf(cfg.aiTwoEnabled) }
+    var aiTwoProvider by remember { mutableStateOf(cfg.aiTwoProvider) }
+    var aiTwoKey by remember { mutableStateOf(cfg.aiTwoApiKey) }
+    var showKey2 by remember { mutableStateOf(false) }
 
     val state by StockMonitorService.uiState.collectAsState()
     val ctx = LocalContext.current
@@ -190,6 +194,33 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                     }
                 }
             }
+            Spacer(Modifier.height(12.dp))
+
+            // ── 辅 AI 资金面分析 ──
+            Section("辅AI 资金面分析（双AI盘面混沌时触发）") {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AI_PROVIDERS.forEach { p ->
+                        FilterChip(
+                            selected = aiTwoProvider == p.id,
+                            onClick = { aiTwoProvider = p.id },
+                            label = { Text(p.displayName, fontSize = 12.sp) },
+                            enabled = enabled
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                LabelField("API Key（留空则复用主AI）", value = aiTwoKey, onValue = { aiTwoKey = it }, enabled = enabled, modifier = Modifier.fillMaxWidth(),
+                    isPassword = !showKey2, trailing = { TextButton("显示") { showKey2 = !showKey2 } })
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(checked = aiTwoEnabled, onCheckedChange = { aiTwoEnabled = it }, enabled = enabled,
+                            colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
+                        Spacer(Modifier.width(8.dp))
+                        Text("启用辅AI（混沌分析）", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                }
+            }
             Spacer(Modifier.height(16.dp))
 
             // ── 主按钮 ──
@@ -199,6 +230,8 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                     else {
                         if (code.isBlank()) return@Button
                         val providerInfo = AI_PROVIDERS.find { it.id == aiProvider } ?: AI_PROVIDERS[0]
+                        val providerInfo2 = AI_PROVIDERS.find { it.id == aiTwoProvider } ?: AI_PROVIDERS[0]
+                        val twoKey = aiTwoKey.trim().ifBlank { aiKey.trim() }
                         configManager.save(AppConfig(
                             stockCode = code.trim(),
                             speakInterval = interval.toIntOrNull() ?: 15,
@@ -213,6 +246,11 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                             aiApiUrl = providerInfo.url,
                             aiModel = providerInfo.model,
                             aiSummaryInterval = aiInterval.toIntOrNull() ?: 5,
+                            aiTwoEnabled = aiTwoEnabled,
+                            aiTwoApiKey = twoKey,
+                            aiTwoProvider = aiTwoProvider,
+                            aiTwoApiUrl = providerInfo2.url,
+                            aiTwoModel = providerInfo2.model,
                             monitoringActive = true
                         ))
                         StockMonitorService.start(ctx)

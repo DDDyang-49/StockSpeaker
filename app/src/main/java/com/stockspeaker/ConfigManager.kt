@@ -37,6 +37,12 @@ data class AppConfig(
     val aiApiUrl: String = "https://api.deepseek.com/v1/chat/completions",
     val aiModel: String = "deepseek-chat",
     val aiSummaryInterval: Int = 5,
+    // 辅 AI 配置（资金面，可用便宜模型）
+    val aiTwoEnabled: Boolean = false,
+    val aiTwoApiKey: String = "",
+    val aiTwoProvider: String = "deepseek",
+    val aiTwoApiUrl: String = "https://api.deepseek.com/v1/chat/completions",
+    val aiTwoModel: String = "deepseek-chat",
     // 运行状态
     val monitoringActive: Boolean = false
 )
@@ -64,6 +70,11 @@ class ConfigManager(context: Context) {
             aiApiUrl = prefs.getString("ai_api_url", "https://api.deepseek.com/v1/chat/completions") ?: "https://api.deepseek.com/v1/chat/completions",
             aiModel = prefs.getString("ai_model", "deepseek-chat") ?: "deepseek-chat",
             aiSummaryInterval = prefs.getInt("ai_summary_interval", 5),
+            aiTwoEnabled = prefs.getBoolean("ai_two_enabled", false),
+            aiTwoApiKey = prefs.getString("ai_two_api_key", "") ?: "",
+            aiTwoProvider = prefs.getString("ai_two_provider", "deepseek") ?: "deepseek",
+            aiTwoApiUrl = prefs.getString("ai_two_api_url", "https://api.deepseek.com/v1/chat/completions") ?: "https://api.deepseek.com/v1/chat/completions",
+            aiTwoModel = prefs.getString("ai_two_model", "deepseek-chat") ?: "deepseek-chat",
             monitoringActive = prefs.getBoolean("monitoring_active", false)
         )
     }
@@ -88,6 +99,11 @@ class ConfigManager(context: Context) {
             .putString("ai_api_url", config.aiApiUrl)
             .putString("ai_model", config.aiModel)
             .putInt("ai_summary_interval", config.aiSummaryInterval)
+            .putBoolean("ai_two_enabled", config.aiTwoEnabled)
+            .putString("ai_two_api_key", config.aiTwoApiKey)
+            .putString("ai_two_provider", config.aiTwoProvider)
+            .putString("ai_two_api_url", config.aiTwoApiUrl)
+            .putString("ai_two_model", config.aiTwoModel)
             .putBoolean("monitoring_active", config.monitoringActive)
             .apply()
     }

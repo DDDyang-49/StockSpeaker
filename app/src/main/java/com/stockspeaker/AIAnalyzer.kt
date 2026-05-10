@@ -36,6 +36,13 @@ data class Pattern(
     val speakText: String      // 已经组织好的口语化文本，可直接送入 TTS
 )
 
+// ── 双AI 结构化立场 ──
+
+data class StanceResult(
+    val stance: Int,    // 1=多, 0=震荡, -1=空
+    val reason: String  // ≤15字简短理由
+)
+
 // ── AI 配置（从 ConfigManager 传入，每次调用时重新读取以保持最新） ──
 
 data class AiConfig(
@@ -48,12 +55,14 @@ data class AiConfig(
 
 class AIAnalyzer(
     private val aiConfigProvider: () -> AiConfig,
-    private val onLog: (String) -> Unit = {}
+    private val onLog: (String) -> Unit = {},
+    private val aiTwoConfigProvider: () -> AiConfig = { AiConfig() }
 ) {
     private val recentData = ArrayDeque<MarketSnapshot>(20)
     private var lastLargeAskCount = 0
     private var lastLargeBidCount = 0
     private val apiExecutor = Executors.newSingleThreadExecutor()
+    private val dualExecutor = Executors.newFixedThreadPool(2)
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -183,7 +192,265 @@ class AIAnalyzer(
         return newsPool[idx]
     }
 
-    /** 构建发给 LLM 的提示词（随机选风格+轮换人格+消息面+异动统计） */
+    // ═══════════════════════════════════════════
+    // 双AI 混沌分析
+    // ═══════════════════════════════════════════
+
+    fun getRecentSnapshots(): List<MarketSnapshot> = recentData.toList()
+
+    fun shouldTriggerDualAnalysis(): Boolean {
+        if (recentData.size < 10) return false
+        return calculateChaosScore(recentData.toList()) >= 4
+    }
+
+    fun calculateChaosScore(snapshots: List<MarketSnapshot>): Int {
+        if (snapshots.isEmpty()) return 0
+        var score = 0
+        val latest = snapshots.last()
+
+        // 1. 放量滞涨/滞跌：量比大但价格几乎不动 = 筹码交换剧烈但没方向
+        if (latest.volRatio > 1.3 && Math.abs(latest.changePct) < 0.3) score += 2
+
+        // 2. 多空对垒：买盘和卖盘同时出现大单堆积
+        if (latest.largeAsksCount >= 3 && latest.largeBidsCount >= 3) score += 1
+
+        // 3. 分时锯齿：价格反复穿越均线，方向混乱
+        if (snapshots.size >= 10) {
+            var crosses = 0
+            val avgPrice = snapshots.map { it.price }.average()
+            for (i in 1 until snapshots.size) {
+                val prevDiff = snapshots[i - 1].price - avgPrice
+                val currDiff = snapshots[i].price - avgPrice
+                if (prevDiff * currDiff < 0) crosses++
+            }
+            if (crosses >= 4) score += 2
+        }
+
+        // 4. 振幅极小但成交不缩：压抑，可能酝酿突破
+        if (Math.abs(latest.changePct) < 0.15 && latest.volRatio in 0.9..1.2) score += 1
+
+        return score
+    }
+
+    /** 双AI并行分析（全部在后台线程，不阻塞主线程） */
+    fun generateDualAnalysis(
+        snapshots: List<MarketSnapshot>,
+        callback: (String?) -> Unit
+    ) {
+        val configA = aiConfigProvider()
+        val configB = aiTwoConfigProvider()
+        if (!configA.enabled || configA.apiKey.isBlank()) { callback(null); return }
+        val useB = configB.enabled && configB.apiKey.isNotBlank()
+
+        apiExecutor.execute {
+            val latch = java.util.concurrent.CountDownLatch(if (useB) 2 else 1)
+            var resultA: StanceResult? = null
+            var resultB: StanceResult? = null
+
+            // AI-A：技术面（主 AI，通常用好模型）
+            dualExecutor.execute {
+                try {
+                    resultA = callAiForStance(configA, buildTechPrompt(snapshots))
+                    onLog("双AI-A: ${if (resultA != null) "stance=${resultA.stance} ${resultA.reason}" else "失败"}")
+                } catch (_: Exception) { onLog("双AI-A: 异常") }
+                latch.countDown()
+            }
+
+            // AI-B：资金面（辅 AI，可用便宜模型）
+            if (useB) {
+                dualExecutor.execute {
+                    try {
+                        resultB = callAiForStance(configB, buildFundPrompt(snapshots))
+                        onLog("双AI-B: ${if (resultB != null) "stance=${resultB.stance} ${resultB.reason}" else "失败"}")
+                    } catch (_: Exception) { onLog("双AI-B: 异常") }
+                    latch.countDown()
+                }
+            }
+
+            val ok = latch.await(8, java.util.concurrent.TimeUnit.SECONDS)
+            if (!ok) onLog("双AI: 超时 A=${resultA != null} B=${resultB != null}")
+
+            val text = synthesize(resultA, resultB)
+            if (text != null) onLog("双AI合成: ${text.take(40)}...")
+            callback(text)
+        }
+    }
+
+    // ── 构建提示词 ──
+
+    private fun buildTechPrompt(snapshots: List<MarketSnapshot>): String {
+        val latest = snapshots.last()
+        val trend = describeTrend(snapshots)
+        return buildString {
+            append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
+            append("成交${latest.amountStr}，近30秒${trend}。")
+            append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
+            append("从技术面和盘口博弈角度判断多空方向。")
+        }
+    }
+
+    private fun buildFundPrompt(snapshots: List<MarketSnapshot>): String {
+        val latest = snapshots.last()
+        val trend = describeTrend(snapshots)
+        val fundDir = if (latest.changePct > 0) "偏流入" else if (latest.changePct < 0) "偏流出" else "平衡"
+        return buildString {
+            append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
+            append("成交${latest.amountStr}，资金${fundDir}，近30秒${trend}。")
+            append("卖盘${latest.largeAsksCount}单对买盘${latest.largeBidsCount}单。")
+            append("从资金流向和主力意图角度判断多空方向。")
+        }
+    }
+
+    private fun describeTrend(snapshots: List<MarketSnapshot>): String {
+        if (snapshots.size < 2) return "平稳"
+        val first = snapshots.first()
+        val latest = snapshots.last()
+        val delta = latest.price - first.price
+        return when {
+            delta > 0.5 -> "持续上涨"
+            delta > 0 -> "小幅上涨"
+            delta < -0.5 -> "持续下跌"
+            delta < 0 -> "小幅下跌"
+            else -> "横盘震荡"
+        }
+    }
+
+    // ── 调用 AI 获取结构化立场 ──
+
+    private fun callAiForStance(config: AiConfig, prompt: String): StanceResult? {
+        val systemPrompt = "你是一个短线盘面分析助手。只看多空方向，不做完整分析。" +
+            "必须严格按JSON格式输出：{\"stance\":1,\"reason\":\"简要理由\"}。" +
+            "stance: 1=偏多, 0=震荡, -1=偏空。reason不超过15字。不要输出任何其他内容。"
+
+        return try {
+            val json = """
+                |{
+                |  "model": "${config.model}",
+                |  "messages": [
+                |    {"role": "system", "content": "${toJsonStr(systemPrompt)}"},
+                |    {"role": "user", "content": ${toJsonStr(prompt)}}
+                |  ],
+                |  "max_tokens": 40,
+                |  "temperature": 0.3
+                |}
+            """.trimMargin()
+
+            val request = Request.Builder()
+                .url(config.apiUrl)
+                .header("Authorization", "Bearer ${config.apiKey}")
+                .header("Content-Type", "application/json")
+                .post(json.toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+            val body = response.body?.string()
+            if (!response.isSuccessful) { onLog("双AI HTTP ${response.code}"); return null }
+
+            val content = if (body != null) extractJsonStr(body, "content") else null
+            if (content != null) parseStanceResult(content) else null
+        } catch (e: Exception) {
+            onLog("双AI调用失败: ${e.message?.take(40)}")
+            null
+        }
+    }
+
+    /** 解析AI返回的结构化JSON，清洗Markdown包裹 */
+    private fun parseStanceResult(raw: String): StanceResult? {
+        val clean = raw
+            .replace("```json", "")
+            .replace("```", "")
+            .replace("`", "")
+            .trim()
+        val stance = extractJsonInt(clean, "stance") ?: return null
+        if (stance !in -1..1) return null
+        val reason = extractJsonStr(clean, "reason") ?: return null
+        return StanceResult(stance, reason.take(15))
+    }
+
+    private fun extractJsonInt(json: String, key: String): Int? {
+        val needle = "\"$key\":"
+        val start = json.indexOf(needle)
+        if (start == -1) return null
+        val sub = json.substring(start + needle.length).trim()
+        val end = sub.indexOfFirst { it == ',' || it == '}' || it == '\n' }
+        return if (end > 0) sub.substring(0, end).trim().toIntOrNull()
+        else sub.trim().toIntOrNull()
+    }
+
+    // ── 合成层：根据双方立场组合输出 ──
+
+    private fun synthesize(a: StanceResult?, b: StanceResult?): String? {
+        if (a == null && b == null) return null
+
+        // 单边存活
+        if (b == null) return singleView(a!!, "技术面")
+        if (a == null) return singleView(b, "资金面")
+
+        // 一致看多
+        if (a.stance == 1 && b.stance == 1) {
+            val patterns = listOf(
+                "技术面和资金面一致看多，${a.reason}，${b.reason}。",
+                "双维度共振偏多——技术面${a.reason}，资金面也${b.reason}。",
+                "两路AI都偏多：${a.reason}，同时${b.reason}。"
+            )
+            return patterns[Random.nextInt(patterns.size)]
+        }
+
+        // 一致看空
+        if (a.stance == -1 && b.stance == -1) {
+            val patterns = listOf(
+                "技术面和资金面一致偏空，${a.reason}，${b.reason}。",
+                "双维度共振偏空——技术面${a.reason}，资金面也${b.reason}。",
+                "两路AI都偏空：${a.reason}，同时${b.reason}。"
+            )
+            return patterns[Random.nextInt(patterns.size)]
+        }
+
+        // 一致震荡
+        if (a.stance == 0 && b.stance == 0) {
+            val patterns = listOf(
+                "技术面和资金面都看震荡，${a.reason}，暂时没有明确方向。",
+                "两路AI一致判断：${a.reason}，盘面在等方向。",
+                "多空都没有明显优势——${a.reason}。"
+            )
+            return patterns[Random.nextInt(patterns.size)]
+        }
+
+        // 多空分歧（最核心的场景）
+        if ((a.stance == 1 && b.stance == -1) || (a.stance == -1 && b.stance == 1)) {
+            val bull = if (a.stance == 1) a else b
+            val bear = if (a.stance == -1) a else b
+            val patterns = listOf(
+                "盘面分歧很大！技术面看${bull.reason}，但资金面看${bear.reason}，多空在较劲。",
+                "注意，两路AI出现分歧——一方认为${bull.reason}，另一方觉得${bear.reason}，说明方向不明。",
+                "多空博弈激烈：${bull.reason}，但${bear.reason}。这种时候方向选择最危险。"
+            )
+            return patterns[Random.nextInt(patterns.size)]
+        }
+
+        // 一方震荡，另一方有方向
+        val directed = if (a.stance != 0) a else b
+        val sideways = if (a.stance == 0) a else b
+        val dirLabel = if (directed.stance == 1) "偏多" else "偏空"
+        val patterns = listOf(
+            "${sideways.reason}，但${dirLabel}信号也在积累——${directed.reason}。",
+            "整体${sideways.reason}，不过${dirLabel}力量在酝酿：${directed.reason}。",
+            "盘面偏混沌，${sideways.reason}，但${directed.reason}值得留意。"
+        )
+        return patterns[Random.nextInt(patterns.size)]
+    }
+
+    private fun singleView(r: StanceResult, source: String): String {
+        val dir = when (r.stance) { 1 -> "偏多"; -1 -> "偏空"; else -> "震荡" }
+        val patterns = listOf(
+            "${source}判断${dir}：${r.reason}。",
+            "从${source}看，${dir}——${r.reason}。",
+            "${source}信号${dir}，${r.reason}。"
+        )
+        return patterns[Random.nextInt(patterns.size)]
+    }
+
+    // ── 构建发给 LLM 的提示词（随机选风格+轮换人格+消息面+异动统计） ──
     private fun buildPrompt(context: MarketContext = MarketContext()): String {
         if (recentData.isEmpty()) return ""
         val latest = recentData.last()
@@ -345,6 +612,7 @@ class AIAnalyzer(
 
     fun shutdown() {
         apiExecutor.shutdownNow()
+        dualExecutor.shutdownNow()
     }
 
     // ── 简易 JSON 字符串提取（不引入第三方 JSON 库） ──
