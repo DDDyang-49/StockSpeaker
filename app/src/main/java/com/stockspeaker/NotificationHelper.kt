@@ -1,0 +1,67 @@
+package com.stockspeaker
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import androidx.core.app.NotificationCompat
+
+object NotificationHelper {
+    const val CHANNEL_ID = "stock_monitor"
+    const val NOTIFICATION_ID = 1
+    const val ACTION_PAUSE = "com.stockspeaker.PAUSE"
+    const val ACTION_RESUME = "com.stockspeaker.RESUME"
+
+    fun createChannel(context: Context) {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(NotificationChannel(
+            CHANNEL_ID, "盯盘服务", NotificationManager.IMPORTANCE_DEFAULT
+        ).apply { description = "摸鱼听盘后台播报通知" })
+    }
+
+    private fun baseBuilder(context: Context) = NotificationCompat.Builder(context, CHANNEL_ID)
+        .setSmallIcon(R.drawable.ic_notification)
+        .setOngoing(true)
+        .setContentIntent(PendingIntent.getActivity(
+            context, 0, Intent(context, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        ))
+
+    private fun pauseAction(context: Context) =
+        NotificationCompat.Action.Builder(
+            0, "⏸ 暂停",
+            PendingIntent.getService(context, 1,
+                Intent(context, StockMonitorService::class.java).setAction(ACTION_PAUSE),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        ).build()
+
+    private fun resumeAction(context: Context) =
+        NotificationCompat.Action.Builder(
+            0, "▶ 继续",
+            PendingIntent.getService(context, 2,
+                Intent(context, StockMonitorService::class.java).setAction(ACTION_RESUME),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        ).build()
+
+    fun build(context: Context, code: String, paused: Boolean = false) =
+        baseBuilder(context)
+            .setContentTitle(if (paused) "摸鱼听盘 ⏸" else "摸鱼听盘")
+            .setContentText(if (paused) "已暂停播报" else "正在监控 $code...")
+            .apply { addAction(if (paused) resumeAction(context) else pauseAction(context)) }
+            .build()
+
+    fun buildWithData(context: Context, name: String, price: Double, changePct: Double, paused: Boolean): NotificationCompat.Builder {
+        val st = when { changePct > 0 -> "涨"; changePct < 0 -> "跌"; else -> "平" }
+        val content = "$name $price ($st${Math.abs(changePct)}%)"
+        return baseBuilder(context)
+            .setContentTitle(if (paused) "摸鱼听盘 ⏸" else "摸鱼听盘")
+            .setContentText(if (paused) "已暂停播报" else content)
+            .apply { addAction(if (paused) resumeAction(context) else pauseAction(context)) }
+    }
+
+    fun notify(context: Context, builder: NotificationCompat.Builder) {
+        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(NOTIFICATION_ID, builder.build())
+    }
+}

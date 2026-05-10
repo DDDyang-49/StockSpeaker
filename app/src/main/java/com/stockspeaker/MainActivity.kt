@@ -7,7 +7,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,23 +26,20 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -55,490 +55,304 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.stockspeaker.ui.theme.AppColors
+import com.stockspeaker.ui.theme.StockColors
 import com.stockspeaker.ui.theme.StockSpeakerTheme
 import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
-
     private lateinit var configManager: ConfigManager
-
-    private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { }
+    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         configManager = ConfigManager(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
+        val versionName = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0" }
+        catch (_: Exception) { "1.0.0" }
 
-        val versionName = try {
-            packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0"
-        } catch (_: Exception) { "1.0.0" }
-
-        setContent {
-            StockSpeakerTheme {
-                StockSpeakerApp(configManager, versionName)
-            }
-        }
+        setContent { StockSpeakerTheme { App(configManager) } }
     }
 }
 
+// ═══════════════════════════════════════════
+// 主界面
+// ═══════════════════════════════════════════
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StockSpeakerApp(configManager: ConfigManager, versionName: String) {
-    val initialConfig = remember { configManager.load() }
+fun App(configManager: ConfigManager) {
+    val cfg = remember { configManager.load() }
+    var code by remember { mutableStateOf(cfg.stockCode) }
+    var interval by remember { mutableStateOf(cfg.speakInterval.toString()) }
+    var threshold by remember { mutableStateOf(cfg.largeOrderThreshold.toString()) }
+    var priceOpt by remember { mutableStateOf(cfg.speakPrice) }
+    var pctOpt by remember { mutableStateOf(cfg.speakPct) }
+    var speedOpt by remember { mutableStateOf(cfg.speakSpeed) }
+    var amountOpt by remember { mutableStateOf(cfg.speakAmount) }
+    var volRatioOpt by remember { mutableStateOf(cfg.speakVolRatio) }
+    var handOpt by remember { mutableStateOf(cfg.speakCurrentHand) }
+    var largeOrderOpt by remember { mutableStateOf(cfg.speakLargeOrders) }
+    var aiEnabled by remember { mutableStateOf(cfg.aiEnabled) }
+    var aiKey by remember { mutableStateOf(cfg.aiApiKey) }
+    var aiInterval by remember { mutableStateOf(cfg.aiSummaryInterval.toString()) }
+    var showKey by remember { mutableStateOf(false) }
 
-    var stockCode by remember { mutableStateOf(initialConfig.stockCode) }
-    var speakInterval by remember { mutableStateOf(initialConfig.speakInterval.toString()) }
-    var largeThreshold by remember { mutableStateOf(initialConfig.largeOrderThreshold.toString()) }
-    var speakPrice by remember { mutableStateOf(initialConfig.speakPrice) }
-    var speakPct by remember { mutableStateOf(initialConfig.speakPct) }
-    var speakSpeed by remember { mutableStateOf(initialConfig.speakSpeed) }
-    var speakAmount by remember { mutableStateOf(initialConfig.speakAmount) }
-    var speakVolRatio by remember { mutableStateOf(initialConfig.speakVolRatio) }
-    var speakCurrentHand by remember { mutableStateOf(initialConfig.speakCurrentHand) }
-    var speakLargeOrders by remember { mutableStateOf(initialConfig.speakLargeOrders) }
-    var aiEnabled by remember { mutableStateOf(initialConfig.aiEnabled) }
-    var aiApiKey by remember { mutableStateOf(initialConfig.aiApiKey) }
-    var aiSummaryInterval by remember { mutableStateOf(initialConfig.aiSummaryInterval.toString()) }
-
-    val uiState by StockMonitorService.uiState.collectAsState()
-
-    val context = LocalContext.current
-    val shape = RoundedCornerShape(16.dp)
+    val state by StockMonitorService.uiState.collectAsState()
+    val ctx = LocalContext.current
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("摸鱼听盘", fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer
-                        ) {
-                            Text(
-                                text = "v$versionName",
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
+                title = { Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("摸鱼听盘", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(8.dp))
+                    Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)) {
+                            Box(Modifier.size(6.dp).clip(CircleShape).background(if (state.isRunning) Color(0xFF34D399) else Color(0xFF6B7280)))
+                            Spacer(Modifier.width(5.dp))
+                            Text("v1.0.2", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
                         }
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
+                }},
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         },
         containerColor = MaterialTheme.colorScheme.background
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            Spacer(modifier = Modifier.height(4.dp))
+    ) { pad ->
+        Column(Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp).verticalScroll(rememberScrollState())) {
+            Spacer(Modifier.height(4.dp))
+            val enabled = !state.isRunning
 
-            val controlsEnabled = !uiState.isRunning
+            // ── 配置卡片 ──
+            Section("盯盘配置") {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    LabelField("股票代码", value = code, onValue = { code = it }, enabled = enabled, Modifier.weight(1f))
+                    LabelField("播报间隔", value = interval, onValue = { interval = it }, enabled = enabled, Modifier.weight(1f), suffix = "秒")
+                }
+                Spacer(Modifier.height(10.dp))
+                LabelField("大单阈值", value = threshold, onValue = { threshold = it }, enabled = enabled, modifier = Modifier.fillMaxWidth(), suffix = "手")
+            }
+            Spacer(Modifier.height(12.dp))
 
-            // ---- 配置卡片 ----
-            Card(
-                shape = shape,
-                colors = CardDefaults.cardColors(containerColor = AppColors.cardBackground),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    SectionTitle("盯盘配置")
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedTextField(
-                            value = stockCode,
-                            onValueChange = { stockCode = it },
-                            label = { Text("股票代码") },
-                            enabled = controlsEnabled,
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp),
-                            colors = fieldColors()
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        OutlinedTextField(
-                            value = speakInterval,
-                            onValueChange = { speakInterval = it },
-                            label = { Text("播报间隔") },
-                            suffix = { Text("秒", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            enabled = controlsEnabled,
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp),
-                            colors = fieldColors()
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    OutlinedTextField(
-                        value = largeThreshold,
-                        onValueChange = { largeThreshold = it },
-                        label = { Text("大单探测阈值") },
-                        suffix = { Text("手", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        enabled = controlsEnabled,
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(10.dp),
-                        colors = fieldColors()
-                    )
+            // ── 播报内容 ──
+            Section("播报内容") {
+                val checks = listOf(
+                    "现价" to priceOpt, "涨幅" to pctOpt, "涨速" to speedOpt,
+                    "成交额" to amountOpt, "量比" to volRatioOpt, "现手" to handOpt, "盘口大单" to largeOrderOpt
+                )
+                val sets = listOf(priceOpt to { priceOpt = it }, pctOpt to { pctOpt = it }, speedOpt to { speedOpt = it },
+                    amountOpt to { amountOpt = it }, volRatioOpt to { volRatioOpt = it },
+                    handOpt to { handOpt = it }, largeOrderOpt to { largeOrderOpt = it })
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.weight(1f)) { Cb("现价", priceOpt, enabled) { priceOpt = it }; Cb("涨幅", pctOpt, enabled) { pctOpt = it }; Cb("涨速", speedOpt, enabled) { speedOpt = it } }
+                    Column(Modifier.weight(1f)) { Cb("成交额", amountOpt, enabled) { amountOpt = it }; Cb("量比", volRatioOpt, enabled) { volRatioOpt = it } }
+                    Column(Modifier.weight(1f)) { Cb("现手", handOpt, enabled) { handOpt = it }; Cb("盘口大单", largeOrderOpt, enabled) { largeOrderOpt = it } }
                 }
             }
+            Spacer(Modifier.height(12.dp))
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // ---- 播报选项卡片 ----
-            Card(
-                shape = shape,
-                colors = CardDefaults.cardColors(containerColor = AppColors.cardBackground),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    SectionTitle("播报内容")
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            CompactCheck("现价", speakPrice, controlsEnabled) { speakPrice = it }
-                            CompactCheck("涨幅", speakPct, controlsEnabled) { speakPct = it }
-                            CompactCheck("涨速", speakSpeed, controlsEnabled) { speakSpeed = it }
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            CompactCheck("成交额", speakAmount, controlsEnabled) { speakAmount = it }
-                            CompactCheck("量比", speakVolRatio, controlsEnabled) { speakVolRatio = it }
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            CompactCheck("现手", speakCurrentHand, controlsEnabled) { speakCurrentHand = it }
-                            CompactCheck("盘口大单", speakLargeOrders, controlsEnabled) { speakLargeOrders = it }
-                        }
+            // ── AI 辅助 ──
+            Section("AI 辅助盘面分析") {
+                LabelField("DeepSeek API Key", value = aiKey, onValue = { aiKey = it }, enabled = enabled, modifier = Modifier.fillMaxWidth(),
+                    isPassword = !showKey, trailing = { TextButton("显示") { showKey = !showKey } })
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(checked = aiEnabled, onCheckedChange = { aiEnabled = it }, enabled = enabled,
+                            colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
+                        Spacer(Modifier.width(8.dp))
+                        Text("启用AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                    if (aiEnabled) Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("每", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        LabelField("", value = aiInterval, onValue = { aiInterval = it }, enabled = enabled, modifier = Modifier.width(56.dp), textAlign = TextAlign.Center)
+                        Text("次播报", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
+            Spacer(Modifier.height(16.dp))
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // ---- AI 辅助卡片 ----
-            Card(
-                shape = shape,
-                colors = CardDefaults.cardColors(containerColor = AppColors.cardBackground),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    SectionTitle("AI 辅助")
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // API Key 输入
-                    var showKey by remember { mutableStateOf(false) }
-                    OutlinedTextField(
-                        value = aiApiKey,
-                        onValueChange = { aiApiKey = it },
-                        label = { Text("DeepSeek API Key") },
-                        enabled = controlsEnabled,
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(10.dp),
-                        colors = fieldColors(),
-                        trailingIcon = {
-                            TextButton(onClick = { showKey = !showKey }) {
-                                Text(if (showKey) "隐藏" else "显示", fontSize = 12.sp)
-                            }
-                        },
-                        visualTransformation = if (showKey) androidx.compose.ui.text.input.VisualTransformation.None
-                            else androidx.compose.ui.text.input.PasswordVisualTransformation()
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // 开关 + 间隔
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = aiEnabled,
-                                onCheckedChange = { aiEnabled = it },
-                                enabled = controlsEnabled,
-                                colors = CheckboxDefaults.colors(
-                                    checkedColor = MaterialTheme.colorScheme.primary,
-                                    uncheckedColor = MaterialTheme.colorScheme.outline
-                                )
-                            )
-                            Text("启用 AI 盘面总结", fontSize = 14.sp)
-                        }
-
-                        if (aiEnabled) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("每", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                OutlinedTextField(
-                                    value = aiSummaryInterval,
-                                    onValueChange = { aiSummaryInterval = it },
-                                    modifier = Modifier.width(56.dp),
-                                    singleLine = true,
-                                    textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center),
-                                    shape = RoundedCornerShape(8.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("次播报", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // ---- 主按钮 ----
+            // ── 主按钮 ──
             Button(
                 onClick = {
-                    if (uiState.isRunning) {
-                        StockMonitorService.stop(context)
-                    } else {
-                        if (stockCode.isBlank()) return@Button
-                        configManager.save(
-                            AppConfig(
-                                stockCode = stockCode.trim(),
-                                speakInterval = speakInterval.toIntOrNull() ?: 15,
-                                largeOrderThreshold = largeThreshold.toIntOrNull() ?: 500,
-                                speakPrice = speakPrice,
-                                speakPct = speakPct,
-                                speakSpeed = speakSpeed,
-                                speakAmount = speakAmount,
-                                speakVolRatio = speakVolRatio,
-                                speakCurrentHand = speakCurrentHand,
-                                speakLargeOrders = speakLargeOrders,
-                                aiEnabled = aiEnabled,
-                                aiApiKey = aiApiKey.trim(),
-                                aiSummaryInterval = aiSummaryInterval.toIntOrNull() ?: 5
-                            )
-                        )
-                        StockMonitorService.start(context)
+                    if (state.isRunning) StockMonitorService.stop(ctx)
+                    else {
+                        if (code.isBlank()) return@Button
+                        configManager.save(AppConfig(
+                            stockCode = code.trim(),
+                            speakInterval = interval.toIntOrNull() ?: 15,
+                            largeOrderThreshold = threshold.toIntOrNull() ?: 500,
+                            speakPrice = priceOpt, speakPct = pctOpt,
+                            speakCurrentHand = handOpt, speakAmount = amountOpt,
+                            speakVolRatio = volRatioOpt, speakSpeed = speedOpt,
+                            speakLargeOrders = largeOrderOpt,
+                            aiEnabled = aiEnabled, aiApiKey = aiKey.trim(),
+                            aiSummaryInterval = aiInterval.toIntOrNull() ?: 5
+                        ))
+                        StockMonitorService.start(ctx)
                     }
                 },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (uiState.isRunning) Color(0xFFC62828) else MaterialTheme.colorScheme.primary
+                    containerColor = if (state.isRunning) Color(0xFF991B1B) else MaterialTheme.colorScheme.primary
                 )
             ) {
-                Text(
-                    text = if (uiState.isRunning) "⏹ 停止盯盘" else "▶ 开始自动盯盘",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Text(if (state.isRunning) "停止盯盘" else "开始自动盯盘",
+                    fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.height(16.dp))
+
+            // ── 行情卡片 ──
+            if (state.isRunning && state.stockName.isNotEmpty()) {
+                PriceCard(state)
+                Spacer(Modifier.height(8.dp))
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // ---- 行情卡片 ----
-            if (uiState.isRunning && uiState.stockName.isNotEmpty()) {
-                StockInfoCard(uiState, shape)
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            // ---- 状态栏 ----
-            StatusBar(uiState)
+            // ── 状态栏 ──
+            StatusSection(state)
         }
     }
 }
 
 // ═══════════════════════════════════════════
-// 子组件
+// 组件
 // ═══════════════════════════════════════════
 
 @Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text = text,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.primary,
-        letterSpacing = 1.sp
+private fun Section(title: String, content: @Composable () -> Unit) {
+    val bg = MaterialTheme.colorScheme.surface
+    val border = MaterialTheme.colorScheme.outlineVariant
+    Surface(shape = RoundedCornerShape(14.dp), color = bg,
+        border = null,
+        shadowElevation = 0.dp,
+        modifier = Modifier.fillMaxWidth().border(1.dp, border, RoundedCornerShape(14.dp))
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
+            Spacer(Modifier.height(12.dp))
+            content()
+        }
+    }
+}
+
+@Composable
+private fun LabelField(
+    label: String, value: String, onValue: (String) -> Unit, enabled: Boolean,
+    modifier: Modifier = Modifier, suffix: String? = null,
+    isPassword: Boolean = false, textAlign: TextAlign = TextAlign.Start,
+    trailing: @Composable (() -> Unit)? = null
+) {
+    OutlinedTextField(
+        value = value, onValueChange = onValue, label = if (label.isNotEmpty()) {{ Text(label, fontSize = 13.sp) }} else null,
+        enabled = enabled, modifier = modifier, singleLine = true,
+        shape = RoundedCornerShape(10.dp), suffix = suffix?.let {{ Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }},
+        textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = textAlign),
+        visualTransformation = if (isPassword) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+        trailingIcon = trailing,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+            focusedLabelColor = MaterialTheme.colorScheme.primary,
+            cursorColor = MaterialTheme.colorScheme.primary
+        )
     )
 }
 
 @Composable
-private fun CompactCheck(
-    label: String,
-    checked: Boolean,
-    enabled: Boolean,
-    onChange: (Boolean) -> Unit
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(vertical = 2.dp)
-    ) {
-        Checkbox(
-            checked = checked,
-            onCheckedChange = onChange,
-            enabled = enabled,
-            colors = CheckboxDefaults.colors(
-                checkedColor = MaterialTheme.colorScheme.primary,
-                uncheckedColor = MaterialTheme.colorScheme.outline
-            )
-        )
+private fun Cb(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+        Checkbox(checked = checked, onCheckedChange = onChange, enabled = enabled,
+            colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary, uncheckedColor = MaterialTheme.colorScheme.outline))
         Text(label, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
     }
 }
 
 @Composable
-private fun StockInfoCard(uiState: ServiceUiState, shape: RoundedCornerShape) {
-    val st = when {
-        uiState.changePct > 0 -> "涨"
-        uiState.changePct < 0 -> "跌"
-        else -> "平"
-    }
-    val priceColor = when {
-        uiState.changePct > 0 -> AppColors.priceUp
-        uiState.changePct < 0 -> AppColors.priceDown
-        else -> MaterialTheme.colorScheme.onSurface
-    }
+private fun TextButton(text: String, onClick: () -> Unit) {
+    androidx.compose.material3.TextButton(onClick = onClick) { Text(text, fontSize = 12.sp) }
+}
 
-    Card(
-        shape = shape,
-        colors = CardDefaults.cardColors(containerColor = AppColors.cardBackground),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        modifier = Modifier.fillMaxWidth()
+// ── 行情卡片 ──
+
+@Composable
+private fun PriceCard(state: ServiceUiState) {
+    val isUp = state.changePct > 0
+    val isDown = state.changePct < 0
+    val priceColor = when { isUp -> StockColors.priceUp; isDown -> StockColors.priceDown; else -> StockColors.priceFlat }
+
+    // 价格变化闪烁动画
+    val flashBg by animateColorAsState(
+        targetValue = when { isUp -> StockColors.priceUpBg; isDown -> StockColors.priceDownBg; else -> Color.Transparent },
+        animationSpec = tween(300)
+    )
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            // 股票名称 + 涨跌标签
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    text = uiState.stockName,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = if (uiState.changePct > 0) AppColors.priceUp.copy(alpha = 0.12f)
-                    else if (uiState.changePct < 0) AppColors.priceDown.copy(alpha = 0.12f)
-                    else MaterialTheme.colorScheme.surfaceVariant
+        Column(Modifier.padding(20.dp).background(flashBg, RoundedCornerShape(14.dp))) {
+            // 名称行
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(state.stockName, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.width(10.dp))
+                Surface(shape = RoundedCornerShape(6.dp),
+                    color = if (isUp) StockColors.priceUpBg else if (isDown) StockColors.priceDownBg else Color.Transparent
                 ) {
-                    Text(
-                        text = "${st}${abs(uiState.changePct)}%",
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = priceColor
-                    )
+                    Text(if (isUp) "涨${abs(state.changePct)}%" else if (isDown) "跌${abs(state.changePct)}%" else "平",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        fontSize = 14.sp, fontWeight = FontWeight.Bold, color = priceColor)
                 }
             }
+            Spacer(Modifier.height(14.dp))
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 大号价格
+            // 价格
             Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                    text = "¥",
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Light,
-                    color = priceColor,
-                    modifier = Modifier.padding(bottom = 6.dp)
-                )
-                Text(
-                    text = uiState.price.toString(),
-                    fontSize = 40.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = priceColor,
-                    fontFamily = FontFamily.Default
-                )
+                Text("¥", fontSize = 20.sp, fontWeight = FontWeight.Light, color = priceColor, modifier = Modifier.padding(bottom = 5.dp))
+                Text(state.price.toString(), fontSize = 38.sp, fontWeight = FontWeight.Bold, color = priceColor, fontFamily = FontFamily.Monospace)
             }
 
-            // 涨速
-            if (abs(uiState.speed) > 0) {
-                Text(
-                    text = "涨速 ${uiState.speed}%",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            if (abs(state.speed) > 0) {
+                Text("涨速 ${state.speed}%", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // 分隔线
-            HorizontalDivider(color = AppColors.dividerColor, thickness = 1.dp)
-
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(Modifier.height(14.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Spacer(Modifier.height(12.dp))
 
             // 数据行
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                DataChip("成交额", uiState.amount)
-                DataChip("量比", uiState.volRatio.toString())
-                DataChip("现手", uiState.currentHand.toString())
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                DataItem("成交额", state.amount)
+                DataItem("量比", state.volRatio.toString())
+                DataItem("现手", state.currentHand.toString())
             }
 
-            // 大单信息
-            if (uiState.largeAsks.isNotEmpty() || uiState.largeBids.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                HorizontalDivider(color = AppColors.dividerColor, thickness = 1.dp)
-                Spacer(modifier = Modifier.height(12.dp))
-
-                if (uiState.largeAsks.isNotEmpty()) {
+            // 大单
+            if (state.largeAsks.isNotEmpty() || state.largeBids.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(Modifier.height(12.dp))
+                if (state.largeAsks.isNotEmpty()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🔻", fontSize = 14.sp)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "压单  ${uiState.largeAsks.joinToString("  ")}",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = AppColors.priceDown
-                        )
+                        Text("▼ ", fontSize = 12.sp, color = StockColors.priceDown, fontWeight = FontWeight.Bold)
+                        Text(state.largeAsks.joinToString("  "), fontSize = 13.sp, color = StockColors.priceDown)
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
                 }
-                if (uiState.largeBids.isNotEmpty()) {
+                if (state.largeBids.isNotEmpty()) {
+                    if (state.largeAsks.isNotEmpty()) Spacer(Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🔺", fontSize = 14.sp)
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "托单  ${uiState.largeBids.joinToString("  ")}",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = AppColors.priceUp
-                        )
+                        Text("▲ ", fontSize = 12.sp, color = StockColors.priceUp, fontWeight = FontWeight.Bold)
+                        Text(state.largeBids.joinToString("  "), fontSize = 13.sp, color = StockColors.priceUp)
                     }
                 }
             }
@@ -547,94 +361,50 @@ private fun StockInfoCard(uiState: ServiceUiState, shape: RoundedCornerShape) {
 }
 
 @Composable
-private fun DataChip(label: String, value: String) {
+private fun DataItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = value,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = label,
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            letterSpacing = 0.5.sp
-        )
+        Text(value, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+        Spacer(Modifier.height(2.dp))
+        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
+// ── 状态栏 ──
+
 @Composable
-private fun StatusBar(uiState: ServiceUiState) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // Main status pill
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = when {
-                uiState.statusText.contains("✗") || uiState.statusText.contains("⚠") -> Color(0xFFFFEBEE)
-                uiState.isRunning -> Color(0xFFE8F5E9)
-                else -> Color(0xFFFFF3E0)
-            }
-        ) {
+private fun StatusSection(state: ServiceUiState) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        val bgColor = when {
+            state.statusText.contains("✗") || state.statusText.contains("⚠") -> StockColors.priceUpBg
+            state.isRunning -> Color(0xFF1A3A2A)
+            else -> Color(0xFF3A2A1A)
+        }
+        val textColor = when {
+            state.statusText.contains("✗") || state.statusText.contains("⚠") -> StockColors.priceUp
+            state.isRunning -> Color(0xFF34D399)
+            else -> StockColors.accentGold
+        }
+        Surface(shape = RoundedCornerShape(20.dp), color = bgColor) {
             Text(
-                text = buildString {
-                    if (uiState.isRunning && uiState.lastSpeakTime.isNotEmpty()) {
-                        append("📢 上次播报 ${uiState.lastSpeakTime}")
-                    } else {
-                        append(uiState.statusText)
-                    }
-                },
+                text = if (state.isRunning && state.lastSpeakTime.isNotEmpty()) "上次播报 ${state.lastSpeakTime}"
+                       else state.statusText,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                color = when {
-                    uiState.statusText.contains("✗") || uiState.statusText.contains("⚠") -> Color(0xFFC62828)
-                    uiState.isRunning -> Color(0xFF2E7D32)
-                    else -> Color(0xFFE65100)
-                },
-                textAlign = TextAlign.Center
+                fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textColor, textAlign = TextAlign.Center
             )
         }
 
-        // Diagnostic log (visible when running with debug info)
-        if (uiState.isRunning && uiState.debugLog.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(6.dp))
-            Card(
-                shape = RoundedCornerShape(10.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                    Text(
-                        text = "📋 诊断日志 (截图发给开发者)",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF616161)
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    val lines = uiState.debugLog.takeLast(20)
-                    Text(
-                        text = lines.joinToString("\n"),
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF424242),
-                        lineHeight = 14.sp
-                    )
+        if (state.isRunning && state.debugLog.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            val bg = MaterialTheme.colorScheme.surfaceVariant
+            Surface(shape = RoundedCornerShape(10.dp), color = bg, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp)) {
+                    Text("诊断日志", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(4.dp))
+                    Text(state.debugLog.takeLast(20).joinToString("\n"), fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp)
                 }
             }
         }
     }
-    Spacer(modifier = Modifier.height(8.dp))
+    Spacer(Modifier.height(8.dp))
 }
-
-@Composable
-private fun fieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedBorderColor = MaterialTheme.colorScheme.primary,
-    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-    focusedLabelColor = MaterialTheme.colorScheme.primary,
-    cursorColor = MaterialTheme.colorScheme.primary
-)
