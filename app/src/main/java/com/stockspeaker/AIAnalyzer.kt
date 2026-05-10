@@ -410,7 +410,7 @@ class AIAnalyzer(
                 |{
                 |  "model": "${model}",
                 |  "messages": [
-                |    {"role": "system", "content": "${toJsonStr(systemPrompt)}"},
+                |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
                 |    {"role": "user", "content": ${toJsonStr(prompt)}}
                 |  ],
                 |  "max_tokens": 60,
@@ -652,8 +652,8 @@ class AIAnalyzer(
                     |{
                     |  "model": "${configB.model}",
                     |  "messages": [
-                    |    {"role": "system", "content": "${toJsonStr(systemPrompt)}"},
-                    |    {"role": "user", "content": "${toJsonStr(userPrompt)}"}
+                    |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
+                    |    {"role": "user", "content": ${toJsonStr(userPrompt)}}
                     |  ],
                     |  "max_tokens": 80,
                     |  "temperature": 0.2
@@ -710,7 +710,7 @@ class AIAnalyzer(
                     |{
                     |  "model": "${config.model}",
                     |  "messages": [
-                    |    {"role": "system", "content": "${toJsonStr(systemPrompt)}"},
+                    |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
                     |  ],
                     |  "max_tokens": 120,
@@ -771,7 +771,7 @@ class AIAnalyzer(
                     |{
                     |  "model": "${config.model}",
                     |  "messages": [
-                    |    {"role": "system", "content": "${toJsonStr(postAlertPrompt)}"},
+                    |    {"role": "system", "content": ${toJsonStr(postAlertPrompt)}},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
                     |  ],
                     |  "max_tokens": 80,
