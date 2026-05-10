@@ -41,11 +41,13 @@ data class AiConfig(
     val enabled: Boolean = false,
     val apiKey: String = "",
     val apiUrl: String = "https://api.deepseek.com/v1/chat/completions",
+    val model: String = "deepseek-chat",
     val summaryInterval: Int = 5
 )
 
 class AIAnalyzer(
-    private val aiConfigProvider: () -> AiConfig
+    private val aiConfigProvider: () -> AiConfig,
+    private val onLog: (String) -> Unit = {}
 ) {
     private val recentData = ArrayDeque<MarketSnapshot>(20)
     private var lastLargeAskCount = 0
@@ -165,9 +167,10 @@ class AIAnalyzer(
 
         apiExecutor.execute {
             try {
+                onLog("🤖 AI: 调用 ${config.model}...")
                 val json = """
                     |{
-                    |  "model": "deepseek-chat",
+                    |  "model": "${config.model}",
                     |  "messages": [
                     |    {"role": "system", "content": "你是老股民，用1-2句口语点评盘面，不超过50字。像朋友聊天那样自然。不要'当前''根据数据'等套话，直接说出你的判断。"},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
@@ -186,9 +189,20 @@ class AIAnalyzer(
 
                 val response = httpClient.newCall(request).execute()
                 val body = response.body?.string()
+                if (!response.isSuccessful) {
+                    onLog("🤖 AI: ✗ HTTP ${response.code} ${body?.take(60) ?: ""}")
+                    callback(null)
+                    return@execute
+                }
                 val content = if (body != null) extractJsonStr(body, "content") else null
+                if (content != null) {
+                    onLog("🤖 AI: ✓ ${content.take(40)}...")
+                } else {
+                    onLog("🤖 AI: ✗ 解析响应失败")
+                }
                 callback(content)
             } catch (e: Exception) {
+                onLog("🤖 AI: ✗ ${e.message?.take(50) ?: "未知错误"}")
                 callback(null)
             }
         }

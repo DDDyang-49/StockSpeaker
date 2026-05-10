@@ -27,7 +27,7 @@ data class ServiceUiState(
     val statusText: String = "🔴 监控已停止",
     val isRunning: Boolean = false,
     val lastSpeakTime: String = "",
-    val debugLog: List<String> = emptyList()
+    val aiLog: List<String> = emptyList()
 )
 
 class StockMonitorService : Service() {
@@ -53,14 +53,15 @@ class StockMonitorService : Service() {
     private var summaryCount = 0
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private val netExecutor = Executors.newSingleThreadExecutor()
-    private val debugLogs = mutableListOf<String>()
+    private val aiLogs = mutableListOf<String>()
 
-    private fun log(msg: String) {
-        val ts = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        val line = "[$ts] $msg"
-        debugLogs.add(line)
-        if (debugLogs.size > 100) debugLogs.removeAt(0)
-        uiState.value = uiState.value.copy(statusText = line.take(80), debugLog = debugLogs.toList())
+    private fun aiLog(msg: String) {
+        val line = "[${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())}] $msg"
+        handler.post {
+            aiLogs.add(line)
+            if (aiLogs.size > 100) aiLogs.removeAt(0)
+            uiState.value = uiState.value.copy(statusText = line.take(80), aiLog = aiLogs.toList())
+        }
     }
 
     override fun onCreate() {
@@ -69,25 +70,25 @@ class StockMonitorService : Service() {
         NotificationHelper.createChannel(this)
         val cm = ConfigManager(this)
         config = cm.load()
-        aiAnalyzer = AIAnalyzer {
+        aiAnalyzer = AIAnalyzer({
             val c = cm.load()
-            AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, apiUrl = c.aiApiUrl, summaryInterval = c.aiSummaryInterval)
-        }
-        ttsEngine = TtsEngine(this, cacheDir) { msg -> log(msg) }
+            AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, apiUrl = c.aiApiUrl, model = c.aiModel, summaryInterval = c.aiSummaryInterval)
+        }, onLog = { msg -> aiLog(msg) })
+        ttsEngine = TtsEngine(this, cacheDir) {}
         ttsEngine.init()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            NotificationHelper.ACTION_PAUSE -> { isPaused = true; ttsEngine.stop(); log("⏸ 暂停"); updateNotif(); return START_STICKY }
-            NotificationHelper.ACTION_RESUME -> { isPaused = false; log("▶ 恢复"); updateNotif(); return START_STICKY }
+            NotificationHelper.ACTION_PAUSE -> { isPaused = true; ttsEngine.stop(); aiLog("⏸ 暂停"); updateNotif(); return START_STICKY }
+            NotificationHelper.ACTION_RESUME -> { isPaused = false; aiLog("▶ 恢复"); updateNotif(); return START_STICKY }
         }
         if (isRunning) return START_STICKY
         isRunning = true
         val cm = ConfigManager(this); config = cm.load()
         lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; intervalLargeEvents.clear()
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
-        uiState.value = uiState.value.copy(isRunning = true, debugLog = debugLogs.toList())
+        uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
         runLoop()
         return START_STICKY
     }
@@ -152,7 +153,7 @@ class StockMonitorService : Service() {
                     data.amountStr, currentHand, data.largeAsksSpeak.size, data.largeBidsSpeak.size)
                 val patterns = aiAnalyzer.feed(snapshot)
                 if (patterns.isNotEmpty()) {
-                    log("AI异动: ${patterns.map { it.type.name }.joinToString()}")
+                    aiLog("AI异动: ${patterns.map { it.type.name }.joinToString()}")
                     ttsEngine.speakAlert(patterns.joinToString("") { it.speakText })
                     alertSpoken = true; lastAlertSpeakTime = now; alertFollowUpActive = false
                 }
@@ -171,6 +172,9 @@ class StockMonitorService : Service() {
             alertFollowUpActive = false
         }
 
+        // ── AI 总结（独立于播报轨道，按自身间隔触发） ──
+        generateAiSummary(data, speed)
+
         if (alertSpoken) {
             lastSpeakTime = now; intervalLargeEvents.clear()
             uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
@@ -188,7 +192,6 @@ class StockMonitorService : Service() {
                     lastSpeakTime = now; intervalLargeEvents.clear()
                     uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
                 }
-                generateAiSummary(data, speed)
             }
         }
     }
@@ -204,8 +207,8 @@ class StockMonitorService : Service() {
         val ctx = generateMockContext(config.stockCode, data.changePct).copy(alertStats = stats)
         aiAnalyzer.generateSummary(ctx) { summary ->
             if (summary != null) handler.post {
-                log("AI总结: ${summary.take(30)}...")
-                ttsEngine.speakAlert("AI点评：$summary")
+                aiLog("AI播报: ${summary.take(30)}...")
+                ttsEngine.speakAlert(summary)
             }
         }
     }

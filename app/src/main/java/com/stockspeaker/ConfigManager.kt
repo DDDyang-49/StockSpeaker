@@ -2,6 +2,21 @@ package com.stockspeaker
 
 import android.content.Context
 
+// ── AI 提供商预设 ──
+
+data class AiProviderInfo(
+    val id: String,
+    val displayName: String,
+    val url: String,
+    val model: String
+)
+
+val AI_PROVIDERS = listOf(
+    AiProviderInfo("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat"),
+    AiProviderInfo("edgefn", "EdgeFn", "https://api.edgefn.net/v1/chat/completions", "Qwen3-235B-A22B-2507"),
+    AiProviderInfo("openai", "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini")
+)
+
 data class AppConfig(
     val stockCode: String = "600519",
     val speakInterval: Int = 15,
@@ -17,7 +32,9 @@ data class AppConfig(
     // AI 配置
     val aiEnabled: Boolean = false,
     val aiApiKey: String = "",
+    val aiProvider: String = "deepseek",
     val aiApiUrl: String = "https://api.deepseek.com/v1/chat/completions",
+    val aiModel: String = "deepseek-chat",
     val aiSummaryInterval: Int = 5
 )
 
@@ -39,7 +56,9 @@ class ConfigManager(context: Context) {
             speakLargeOrders = prefs.getBoolean("speak_large_orders", true),
             aiEnabled = prefs.getBoolean("ai_enabled", false),
             aiApiKey = prefs.getString("ai_api_key", "") ?: "",
+            aiProvider = prefs.getString("ai_provider", "deepseek") ?: "deepseek",
             aiApiUrl = prefs.getString("ai_api_url", "https://api.deepseek.com/v1/chat/completions") ?: "https://api.deepseek.com/v1/chat/completions",
+            aiModel = prefs.getString("ai_model", "deepseek-chat") ?: "deepseek-chat",
             aiSummaryInterval = prefs.getInt("ai_summary_interval", 5)
         )
     }
@@ -59,7 +78,9 @@ class ConfigManager(context: Context) {
             .putBoolean("speak_large_orders", config.speakLargeOrders)
             .putBoolean("ai_enabled", config.aiEnabled)
             .putString("ai_api_key", config.aiApiKey)
+            .putString("ai_provider", config.aiProvider)
             .putString("ai_api_url", config.aiApiUrl)
+            .putString("ai_model", config.aiModel)
             .putInt("ai_summary_interval", config.aiSummaryInterval)
             .apply()
     }

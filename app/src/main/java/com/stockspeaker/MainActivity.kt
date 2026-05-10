@@ -31,6 +31,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -78,7 +79,7 @@ class MainActivity : ComponentActivity() {
         val versionName = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0" }
         catch (_: Exception) { "1.0.0" }
 
-        setContent { StockSpeakerTheme { App(configManager) } }
+        setContent { StockSpeakerTheme { App(configManager, versionName) } }
     }
 }
 
@@ -88,7 +89,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun App(configManager: ConfigManager) {
+fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     val cfg = remember { configManager.load() }
     var code by remember { mutableStateOf(cfg.stockCode) }
     var interval by remember { mutableStateOf(cfg.speakInterval.toString()) }
@@ -101,6 +102,7 @@ fun App(configManager: ConfigManager) {
     var handOpt by remember { mutableStateOf(cfg.speakCurrentHand) }
     var largeOrderOpt by remember { mutableStateOf(cfg.speakLargeOrders) }
     var aiEnabled by remember { mutableStateOf(cfg.aiEnabled) }
+    var aiProvider by remember { mutableStateOf(cfg.aiProvider) }
     var aiKey by remember { mutableStateOf(cfg.aiApiKey) }
     var aiInterval by remember { mutableStateOf(cfg.aiSummaryInterval.toString()) }
     var showKey by remember { mutableStateOf(false) }
@@ -118,7 +120,7 @@ fun App(configManager: ConfigManager) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)) {
                             Box(Modifier.size(6.dp).clip(CircleShape).background(if (state.isRunning) Color(0xFF34D399) else Color(0xFF6B7280)))
                             Spacer(Modifier.width(5.dp))
-                            Text("v1.0.3", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            Text("v$versionName", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
                         }
                     }
                 }},
@@ -154,7 +156,18 @@ fun App(configManager: ConfigManager) {
 
             // ── AI 辅助 ──
             Section("AI 辅助盘面分析") {
-                LabelField("DeepSeek API Key", value = aiKey, onValue = { aiKey = it }, enabled = enabled, modifier = Modifier.fillMaxWidth(),
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AI_PROVIDERS.forEach { p ->
+                        FilterChip(
+                            selected = aiProvider == p.id,
+                            onClick = { aiProvider = p.id },
+                            label = { Text(p.displayName, fontSize = 12.sp) },
+                            enabled = enabled
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                LabelField("API Key", value = aiKey, onValue = { aiKey = it }, enabled = enabled, modifier = Modifier.fillMaxWidth(),
                     isPassword = !showKey, trailing = { TextButton("显示") { showKey = !showKey } })
                 Spacer(Modifier.height(10.dp))
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
@@ -179,6 +192,7 @@ fun App(configManager: ConfigManager) {
                     if (state.isRunning) StockMonitorService.stop(ctx)
                     else {
                         if (code.isBlank()) return@Button
+                        val providerInfo = AI_PROVIDERS.find { it.id == aiProvider } ?: AI_PROVIDERS[0]
                         configManager.save(AppConfig(
                             stockCode = code.trim(),
                             speakInterval = interval.toIntOrNull() ?: 15,
@@ -188,6 +202,9 @@ fun App(configManager: ConfigManager) {
                             speakVolRatio = volRatioOpt, speakSpeed = speedOpt,
                             speakLargeOrders = largeOrderOpt,
                             aiEnabled = aiEnabled, aiApiKey = aiKey.trim(),
+                            aiProvider = aiProvider,
+                            aiApiUrl = providerInfo.url,
+                            aiModel = providerInfo.model,
                             aiSummaryInterval = aiInterval.toIntOrNull() ?: 5
                         ))
                         StockMonitorService.start(ctx)
@@ -386,14 +403,14 @@ private fun StatusSection(state: ServiceUiState) {
             )
         }
 
-        if (state.isRunning && state.debugLog.isNotEmpty()) {
+        if (state.isRunning && state.aiLog.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             val bg = MaterialTheme.colorScheme.surfaceVariant
             Surface(shape = RoundedCornerShape(10.dp), color = bg, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(10.dp)) {
-                    Text("诊断日志", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("AI 日志", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(4.dp))
-                    Text(state.debugLog.takeLast(20).joinToString("\n"), fontSize = 10.sp,
+                    Text(state.aiLog.takeLast(20).joinToString("\n"), fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp)
                 }
             }
