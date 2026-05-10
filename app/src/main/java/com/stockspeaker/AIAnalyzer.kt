@@ -116,7 +116,7 @@ class AIAnalyzer(
     private fun nextTask(): AnalysisTask {
         if (taskCursor >= taskOrder.size) {
             taskOrder = (analysisTasks.indices).toMutableList().apply { shuffle() }
-            val prevLast = if (::_lastTaskIdx.isInitialized) _lastTaskIdx else -1
+            val prevLast = _lastTaskIdx
             if (taskOrder.size > 1 && taskOrder.first() == prevLast) {
                 val tmp = taskOrder[0]; taskOrder[0] = taskOrder[1]; taskOrder[1] = tmp
             }
