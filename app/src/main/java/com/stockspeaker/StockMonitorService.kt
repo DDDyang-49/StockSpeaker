@@ -53,7 +53,9 @@ class StockMonitorService : Service() {
     private var lastAlertSpeakTime = 0L
     private var alertFollowUpActive = false
     private var followUpCount = 0
-    private var summaryCount = 0
+    private var normalBroadcastCount = 0
+    private var pendingAiSummary: String? = null
+    private var aiRequestInFlight = false
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private val netExecutor = Executors.newSingleThreadExecutor()
     private val aiLogs = mutableListOf<String>()
@@ -91,6 +93,7 @@ class StockMonitorService : Service() {
         val cm = ConfigManager(this); config = cm.load()
         cm.setMonitoringActive(true)
         lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; intervalLargeEvents.clear()
+        normalBroadcastCount = 0; pendingAiSummary = null; aiRequestInFlight = false
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
         runLoop()
@@ -181,43 +184,56 @@ class StockMonitorService : Service() {
             alertFollowUpActive = false
         }
 
-        // ── AI 总结（独立于播报轨道，按自身间隔触发） ──
-        generateAiSummary(data, speed)
-
         if (alertSpoken) {
             lastSpeakTime = now; intervalLargeEvents.clear()
             uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
             return
         }
 
-        // ── 轨道2：定时常规播报 ──
+        // ── 收集时段内大单 ──
         if (currentHand >= config.largeOrderThreshold) {
             val action = when { speed > 0 -> "主动买入"; speed < 0 -> "抛出"; else -> "成交" }
             intervalLargeEvents.add(Triple(nowStr, action, currentHand))
         }
-        buildSpeakText(data, currentHand, speed)?.let { text ->
-            if (now - lastSpeakTime >= config.speakInterval * 1000L) {
-                if (ttsEngine.speak(text)) {
-                    lastSpeakTime = now; intervalLargeEvents.clear()
-                    uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+
+        // ── 轨道2：定时常规播报 + AI 点评 ──
+        if (!ttsEngine.isSpeaking) {
+            if (pendingAiSummary != null) {
+                val summary = pendingAiSummary!!
+                pendingAiSummary = null
+                ttsEngine.speak(summary)
+            } else {
+                buildSpeakText(data, currentHand, speed)?.let { text ->
+                    if (now - lastSpeakTime >= config.speakInterval * 1000L) {
+                        if (ttsEngine.speak(text)) {
+                            lastSpeakTime = now; intervalLargeEvents.clear()
+                            normalBroadcastCount++
+                            uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+                            maybeGenerateAiSummary(data, speed)
+                        }
+                    }
                 }
             }
         }
     }
 
-    private fun generateAiSummary(data: StockData, speed: Double) {
+    private fun maybeGenerateAiSummary(data: StockData, speed: Double) {
         if (!config.aiEnabled || config.aiApiKey.isBlank()) return
-        summaryCount++
-        if (summaryCount % config.aiSummaryInterval != 0) return
+        if (aiRequestInFlight) return
+        if (normalBroadcastCount % config.aiSummaryInterval != 0) return
+        aiRequestInFlight = true
         val stats = buildString {
             if (Math.abs(speed) >= config.speedAlertThreshold) append("涨速${fmtPct(Math.abs(speed))}% ")
             if (Math.abs(data.changePct) >= 2.0) append("振幅${fmtPct(Math.abs(data.changePct))}% ")
         }
         val ctx = generateMockContext(config.stockCode, data.changePct).copy(alertStats = stats)
         aiAnalyzer.generateSummary(ctx) { summary ->
+            aiRequestInFlight = false
             if (summary != null) handler.post {
-                aiLog("AI播报: ${summary.take(30)}...")
-                ttsEngine.speakAlert(summary)
+                aiLog("AI点评: ${summary.take(30)}...")
+                if (!ttsEngine.speak(summary)) {
+                    pendingAiSummary = summary
+                }
             }
         }
     }
