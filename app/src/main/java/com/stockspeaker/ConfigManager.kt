@@ -18,6 +18,8 @@ val AI_PROVIDERS = listOf(
     AiProviderInfo("openai", "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini")
 )
 
+data class ApiKeyEntry(val key: String, val note: String = "")
+
 data class AppConfig(
     val stockCode: String = "603960",
     val speakInterval: Int = 15,
@@ -121,18 +123,22 @@ class ConfigManager(context: Context) {
 
     // ── API Key 历史记录（最多5条） ──
 
-    fun getApiKeyHistory(): List<String> {
+    fun getApiKeyHistory(): List<ApiKeyEntry> {
         val raw = prefs.getString("api_key_history", "") ?: ""
-        return raw.split("|||").filter { it.isNotBlank() }
+        return raw.split("|||").filter { it.isNotBlank() }.map {
+            val parts = it.split("|", limit = 2)
+            ApiKeyEntry(parts[0], parts.getOrElse(1) { "" })
+        }
     }
 
-    fun addApiKeyToHistory(key: String) {
+    fun addApiKeyToHistory(key: String, note: String = "") {
         if (key.isBlank()) return
+        val entry = "$key|$note"
         val history = getApiKeyHistory().toMutableList()
-        history.remove(key)
-        history.add(0, key)
+        history.removeAll { it.key == key }
+        history.add(0, ApiKeyEntry(key, note))
         if (history.size > 5) repeat(history.size - 5) { history.removeAt(history.size - 1) }
-        prefs.edit().putString("api_key_history", history.joinToString("|||")).apply()
+        prefs.edit().putString("api_key_history", history.joinToString("|||") { "${it.key}|${it.note}" }).apply()
     }
 
     // ── 股票代码历史记录（最多10条，存"代码|名称"） ──

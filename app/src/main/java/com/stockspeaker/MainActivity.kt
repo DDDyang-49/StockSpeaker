@@ -127,6 +127,14 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     var aiTwoProvider by remember { mutableStateOf(cfg.aiTwoProvider) }
     var aiTwoKey by remember { mutableStateOf(cfg.aiTwoApiKey) }
     var showKey2 by remember { mutableStateOf(false) }
+    var aiKeyNote by remember {
+        val entry = configManager.getApiKeyHistory().find { it.key == cfg.aiApiKey }
+        mutableStateOf(entry?.note ?: "")
+    }
+    var aiTwoKeyNote by remember {
+        val entry = configManager.getApiKeyHistory().find { it.key == cfg.aiTwoApiKey }
+        mutableStateOf(entry?.note ?: "")
+    }
     var selectedTab by remember { mutableStateOf(0) }
 
     val state by StockMonitorService.uiState.collectAsState()
@@ -215,7 +223,8 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                 aiKey, { aiKey = it }, aiInterval, { aiInterval = it },
                 showKey, { showKey = it }, aiTwoEnabled, { aiTwoEnabled = it },
                 aiTwoProvider, { aiTwoProvider = it }, aiTwoKey, { aiTwoKey = it },
-                showKey2, { showKey2 = it }, { buildConfig() }, configManager)
+                showKey2, { showKey2 = it }, aiKeyNote, { aiKeyNote = it },
+                aiTwoKeyNote, { aiTwoKeyNote = it }, { buildConfig() }, configManager)
         }
     }
 }
@@ -349,6 +358,8 @@ private fun SettingsTab(
     aiTwoProvider: String, onAiTwoProvider: (String) -> Unit,
     aiTwoKey: String, onAiTwoKey: (String) -> Unit,
     showKey2: Boolean, onShowKey2: (Boolean) -> Unit,
+    aiKeyNote: String, onAiKeyNote: (String) -> Unit,
+    aiTwoKeyNote: String, onAiTwoKeyNote: (String) -> Unit,
     buildConfig: () -> AppConfig,
     configManager: ConfigManager
 ) {
@@ -430,14 +441,17 @@ private fun SettingsTab(
                     }
                 )
                 DropdownMenu(expanded = apiKeyExpanded, onDismissRequest = { apiKeyExpanded = false }) {
-                    apiKeyHistory.forEach { k ->
+                    apiKeyHistory.forEach { e ->
+                        val label = maskKey(e.key) + if (e.note.isNotBlank()) "  |  ${e.note}" else ""
                         DropdownMenuItem(
-                            text = { Text(maskKey(k), fontSize = 11.sp, fontFamily = FontFamily.Monospace) },
-                            onClick = { onAiKey(k); apiKeyExpanded = false }
+                            text = { Text(label, fontSize = 11.sp, fontFamily = FontFamily.Monospace) },
+                            onClick = { onAiKey(e.key); onAiKeyNote(e.note); apiKeyExpanded = false }
                         )
                     }
                 }
             }
+            Spacer(Modifier.height(6.dp))
+            LabelField("备注（记录模型/用途）", value = aiKeyNote, onValue = onAiKeyNote, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -481,14 +495,17 @@ private fun SettingsTab(
                     }
                 )
                 DropdownMenu(expanded = apiKey2Expanded, onDismissRequest = { apiKey2Expanded = false }) {
-                    apiKeyHistory.forEach { k ->
+                    apiKeyHistory.forEach { e ->
+                        val label = maskKey(e.key) + if (e.note.isNotBlank()) "  |  ${e.note}" else ""
                         DropdownMenuItem(
-                            text = { Text(maskKey(k), fontSize = 11.sp, fontFamily = FontFamily.Monospace) },
-                            onClick = { onAiTwoKey(k); apiKey2Expanded = false }
+                            text = { Text(label, fontSize = 11.sp, fontFamily = FontFamily.Monospace) },
+                            onClick = { onAiTwoKey(e.key); onAiTwoKeyNote(e.note); apiKey2Expanded = false }
                         )
                     }
                 }
             }
+            Spacer(Modifier.height(6.dp))
+            LabelField("备注（记录模型/用途）", value = aiTwoKeyNote, onValue = onAiTwoKeyNote, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -506,8 +523,8 @@ private fun SettingsTab(
             onClick = {
                 val cfg = buildConfig()
                 configManager.save(cfg)
-                if (cfg.aiApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiApiKey)
-                if (cfg.aiTwoApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiTwoApiKey)
+                if (cfg.aiApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiApiKey, aiKeyNote)
+                if (cfg.aiTwoApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiTwoApiKey, aiTwoKeyNote)
             },
             modifier = Modifier.fillMaxWidth().height(44.dp),
             shape = RoundedCornerShape(12.dp),

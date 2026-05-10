@@ -4,6 +4,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
@@ -427,9 +428,9 @@ class AIAnalyzer(
 
             val response = httpClient.newCall(request).execute()
             val body = response.body?.string()
-            if (!response.isSuccessful) { onLog("双AI HTTP ${response.code}"); return null }
+            if (!response.isSuccessful) { onLog("双AI HTTP ${response.code} ${body?.take(80) ?: ""}"); return null }
 
-            val content = if (body != null) extractJsonStr(body, "content") else null
+            val content = extractContent(body)
             if (content != null) parseStanceResult(content) else null
         } catch (e: Exception) {
             onLog("双AI调用失败: ${e.message?.take(40)}")
@@ -672,7 +673,7 @@ class AIAnalyzer(
                 if (!response.isSuccessful) {
                     callback(listOf(fullText)); return@execute
                 }
-                val content = body?.let { extractJsonStr(it, "content") } ?: run { callback(listOf(fullText)); return@execute }
+                val content = extractContent(body) ?: run { callback(listOf(fullText)); return@execute }
                 val cleaned = content.replace("```json", "").replace("```", "").trim()
                 val start = cleaned.indexOf('[')
                 val end = cleaned.lastIndexOf(']')
@@ -732,11 +733,11 @@ class AIAnalyzer(
                     callback(null)
                     return@execute
                 }
-                val content = body?.let { extractJsonStr(it, "content") }
+                val content = extractContent(body)
                 if (content != null) {
                     onLog("🤖 AI: ✓ ${content.take(40)}...")
                 } else {
-                    onLog("🤖 AI: ✗ 解析响应失败")
+                    onLog("🤖 AI: ✗ 解析响应失败 body=${body?.take(120) ?: "null"}")
                 }
                 callback(content)
             } catch (e: Exception) {
@@ -788,10 +789,13 @@ class AIAnalyzer(
 
                 val response = httpClient.newCall(request).execute()
                 val body = response.body?.string()
-                if (!response.isSuccessful) { callback(null); return@execute }
-                val content = body?.let { extractJsonStr(it, "content") }
+                if (!response.isSuccessful) {
+                    onLog("🤖 AI: ✗ HTTP ${response.code} ${body?.take(80) ?: ""}")
+                    callback(null); return@execute
+                }
+                val content = extractContent(body)
                 if (content != null) onLog("🤖 AI: ✓ ${content.take(40)}...")
-                else onLog("🤖 AI: ✗ 解析响应失败")
+                else onLog("🤖 AI: ✗ 解析响应失败 body=${body?.take(120) ?: "null"}")
                 callback(content)
             } catch (e: Exception) {
                 onLog("🤖 AI: ✗ ${e.message?.take(50) ?: "未知错误"}")
@@ -805,7 +809,22 @@ class AIAnalyzer(
         dualExecutor.shutdownNow()
     }
 
-    // ── 简易 JSON 字符串提取（不引入第三方 JSON 库） ──
+    // ── 用 Android 内置 JSONObject 提取 API 响应中的 content ──
+
+    private fun extractContent(body: String?): String? {
+        if (body == null) return null
+        return try {
+            JSONObject(body)
+                .getJSONArray("choices")
+                .getJSONObject(0)
+                .getJSONObject("message")
+                .optString("content", null)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // ── 简易 JSON 字符串提取（用于解析 AI 输出的扁平 JSON） ──
 
     private fun toJsonStr(s: String): String {
         val sb = StringBuilder("\"")
