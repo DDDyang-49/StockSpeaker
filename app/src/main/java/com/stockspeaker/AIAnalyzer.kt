@@ -250,8 +250,9 @@ class AIAnalyzer(
             // AI-A：技术面（主 AI，通常用好模型）
             dualExecutor.execute {
                 try {
-                    resultA = callAiForStance(configA, buildTechPrompt(snapshots))
-                    onLog("双AI-A: ${if (resultA != null) "stance=${resultA.stance} ${resultA.reason}" else "失败"}")
+                    val r = callAiForStance(configA, buildTechPrompt(snapshots))
+                    resultA = r
+                    onLog("双AI-A: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                 } catch (_: Exception) { onLog("双AI-A: 异常") }
                 latch.countDown()
             }
@@ -260,8 +261,9 @@ class AIAnalyzer(
             if (useB) {
                 dualExecutor.execute {
                     try {
-                        resultB = callAiForStance(configB, buildFundPrompt(snapshots))
-                        onLog("双AI-B: ${if (resultB != null) "stance=${resultB.stance} ${resultB.reason}" else "失败"}")
+                        val r = callAiForStance(configB, buildFundPrompt(snapshots))
+                        resultB = r
+                        onLog("双AI-B: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                     } catch (_: Exception) { onLog("双AI-B: 异常") }
                     latch.countDown()
                 }
