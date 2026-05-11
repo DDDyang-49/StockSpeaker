@@ -12,6 +12,7 @@ data class StockData(
     val totalVol: Int = 0,
     val amountWan: Double = 0.0,
     val volRatio: Double = 0.0,
+    val turnover: Double = 0.0,
     val bids: List<Pair<Double, Int>> = emptyList(),
     val asks: List<Pair<Double, Int>> = emptyList()
 ) {
@@ -145,6 +146,7 @@ object StockFetcher {
             val totalVol = arr[6].toIntOrNull() ?: 0
             val amountWan = arr[37].toDoubleOrNull() ?: 0.0
             val volRatio = arr[49].toDoubleOrNull() ?: 0.0
+            val turnover = arr[38].toDoubleOrNull() ?: 0.0
 
             val bids = (9..17 step 2).map { i ->
                 val p = arr[i].toDoubleOrNull() ?: 0.0
@@ -158,7 +160,7 @@ object StockFetcher {
                 Pair(p, if (v >= threshold) v else 0)
             }
 
-            return StockData(name, code, price, changePct, totalVol, amountWan, volRatio, bids, asks)
+            return StockData(name, code, price, changePct, totalVol, amountWan, volRatio, turnover, bids, asks)
         }
         return null
     }

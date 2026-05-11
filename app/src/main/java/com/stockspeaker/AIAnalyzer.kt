@@ -29,7 +29,9 @@ enum class PatternType {
     VOLUME_BREAKOUT,   // 放量突破
     SPEED_ALERT,       // 涨速异动
     SHARP_REVERSAL,    // 高位急转
-    BIG_ORDER_ALERT    // 大单异动
+    BIG_ORDER_ALERT,   // 大单异动
+    FAKE_BULL,         // 诱多：大单扫货但股价滞涨
+    SILENT_DROP        // 无量空跌：缩量阴跌无承接
 }
 
 data class Pattern(
@@ -66,102 +68,16 @@ class AIAnalyzer(
     private val apiExecutor = Executors.newSingleThreadExecutor()
     private val dualExecutor = Executors.newFixedThreadPool(2)
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
         .build()
     @Volatile private var cachedDualAnalysis: String? = null
+    @Volatile var lastStance: String? = null  // 上次AI立场："看多"/"看空"/"多空焦灼"
 
-    // ═══════════════════════════════════════════
-    // Persona × Task × Signal 三维播报系统
-    // 维度1：人设（谁在说）— 8种，控制语气
-    // 维度2：分析任务（聊什么话题）— 16种，继承原版15风格
-    // 维度3：技术信号（看到就顺带提）— 12种，v1.0.7深度分析
-    // ═══════════════════════════════════════════
-
-    // ── 维度1：8 种人设 ──
-    private val personas = listOf(
-        "你是老股民，语气像跟朋友喝酒聊盘面。口语化，直接说出判断，不加修饰。",
-        "你是游资操盘手，短线博弈视角。说话干脆利落，一针见血，不废话。",
-        "你是技术派交易员，从K线和量价角度点评。说话带着实时盯盘的感觉，接地气。",
-        "你是盘口猎人，专盯买卖盘口的微观博弈。从挂单变化推演主力意图，说话警觉犀利。",
-        "你是量化分析师，从数据和概率角度点评。冷静理性，关注统计规律和异常值。",
-        "你是基本面派，从价值角度审视盘面。理性沉稳，关注估值和行业逻辑。",
-        "你是趋势交易者，从波浪和动能角度点评。关注方向延续性，说话果断。",
-        "你是逆向思考者，习惯反向解读盘面信号。在大家都看多时找空头理由，反之亦然。"
-    )
-    private var personaIdx = 0
-
-    // ── 维度2：16 种分析任务（原版风格，决定"聊什么话题"） ──
-    private data class AnalysisTask(val label: String, val instruction: String)
-
-    private val analysisTasks = listOf(
-        AnalysisTask("股价走势", "用2-3句口语分析该股当前的价格波动特征和走势状态。"),
-        AnalysisTask("消息面", "用2-3句口语聊聊该股当前可能受什么消息面影响。直接说看法，不要'可能'。"),
-        AnalysisTask("买卖点", "用2-3句口语说说当前买卖时机判断，像跟朋友交流操作思路。直接了当。"),
-        AnalysisTask("资金动向", "用2-3句口语分析当前资金流向和主力意图。"),
-        AnalysisTask("技术形态", "用2-3句口语分析当前技术形态和趋势信号。"),
-        AnalysisTask("风险机会", "用2-3句口语提示当前风险和机会在哪里。直接说重点。"),
-        AnalysisTask("盘口博弈", "用2-3句口语分析当前买卖盘口力量对比和多空博弈状态。"),
-        AnalysisTask("量价关系", "用2-3句口语分析当前成交量与价格走势的配合关系，有背离必须说。"),
-        AnalysisTask("主力意图", "用2-3句口语推测当前主力资金的操作意图和动向。"),
-        AnalysisTask("短线情绪", "用2-3句口语分析当前短线资金情绪和市场氛围。"),
-        AnalysisTask("异动解读", "用2-3句口语解读近期盘中异动背后可能的原因和含义。"),
-        AnalysisTask("大单跟踪", "用2-3句口语跟踪分析近期大单资金流向和含义。"),
-        AnalysisTask("板块联动", "用2-3句口语分析该股与所属板块的联动关系和强弱对比。"),
-        AnalysisTask("分时特征", "用2-3句口语分析当日分时走势的特征和关键价位。"),
-        AnalysisTask("综合研判", "用2-3句口语综合量价、盘口、趋势、情绪，给出最核心的1个判断。"),
-        AnalysisTask("变盘预警", "用2-3句口语判断当前是否接近变盘节点——结合量价背离、盘口异动、关键位攻防。")
-    )
-    private var taskOrder = mutableListOf<Int>()
-    private var taskCursor = 0
-
-    private fun nextTask(): AnalysisTask {
-        if (taskCursor >= taskOrder.size) {
-            taskOrder = (analysisTasks.indices).toMutableList().apply { shuffle() }
-            val prevLast = _lastTaskIdx
-            if (taskOrder.size > 1 && taskOrder.first() == prevLast) {
-                val tmp = taskOrder[0]; taskOrder[0] = taskOrder[1]; taskOrder[1] = tmp
-            }
-            taskCursor = 0
-        }
-        val task = analysisTasks[taskOrder[taskCursor]]
-        _lastTaskIdx = taskOrder[taskCursor]
-        taskCursor++
-        return task
-    }
-    private var _lastTaskIdx = -1
-
-    // ── 维度3：12 个技术信号提示（"数据里看到就顺带提一嘴"） ──
-    private val techSignals = listOf(
-        "量价背离（价升量缩/价跌量增/放量滞涨/缩量横盘）",
-        "盘口多空失衡（卖盘压单明显多于买盘托单，或反之）",
-        "主力吃货或出货迹象（大单成交方向+密度异常）",
-        "触及关键价位（前高前低/整数关口，突破或受阻）",
-        "趋势动能变化（涨跌加速还是衰减，是否有乏力迹象）",
-        "变盘前兆（量价背离+形态破位+盘口异动共振）",
-        "情绪极端（追涨过度或恐慌抛售，投机氛围异常）",
-        "经典技术形态（双底双顶/头肩/三角形/旗形等）",
-        "资金真实意图可疑（流入但价不涨=诱多，流出但价不跌=洗盘）",
-        "筹码结构异常（当前区间套牢盘密集或获利盘涌出压力）",
-        "波浪拐点（上升浪见顶或调整浪结束，浪型完整度）",
-        "多信号共振（多个技术信号同时指向同一方向时重点说）"
-    )
-
-    // ── 组装系统提示词：人设 + 任务 + 顺带信号 ──
-    private fun pickPersonaAndTask(): Pair<String, String> {
-        val persona = personas[personaIdx % personas.size]
-        personaIdx++
-        val task = nextTask()
-        // 随机抽 3 个技术信号作为"顺带提示"
-        val hints = techSignals.shuffled().take(3).joinToString("；")
-        val prompt = buildString {
-            append(persona)
-            append("本次任务是【${task.label}】——${task.instruction}")
-            append("基于盘面数据完成分析任务。另外数据中如果明显出现以下信号，顺带提一嘴：${hints}。")
-            append("不跑题，用2-4句口语完成。不超过80字。不要'当前''根据数据'套话，直接说出判断。")
-        }
-        return Pair(persona, prompt)
-    }
+    // ── 固定人设（统一，不随机） ──
+    private val FIXED_PERSONA = "你是一个拥有20年A股游资经验的无情机器。只根据提供的盘面最新数据，用2句话给出诊断。" +
+        "第一句话必须明确：【看多】、【看空】或【多空焦灼】。" +
+        "第二句话说明最核心的数据理由。拒绝废话，拒绝风险提示。"
 
     // ── 消息面池（30+条，按时间+股票代码混合选择，保证多变） ──
 
@@ -246,6 +162,28 @@ class AIAnalyzer(
                 "大单异动：${parts.joinToString("，")}。"))
         }
 
+        // 5. 诱多检测：连续大单扫货但股价滞涨（近10快照买单档数累计增≥3次，价格变化<0.2%）
+        if (recentData.size >= 10) {
+            val recent10 = recentData.takeLast(10)
+            val oldestSnapshot = recent10.first()
+            val priceChangePct = Math.abs((snapshot.price - oldestSnapshot.price) / oldestSnapshot.price * 100)
+            var bidIncreaseCount = 0
+            for (i in 1 until recent10.size) {
+                if (recent10[i].largeBidsCount > recent10[i - 1].largeBidsCount) bidIncreaseCount++
+            }
+            if (bidIncreaseCount >= 3 && priceChangePct < 0.2 && snapshot.largeBidsCount > 0) {
+                patterns.add(Pattern(PatternType.FAKE_BULL,
+                    "注意！连续大单扫货但股价滞涨，谨防主力诱多出货！"))
+            }
+        }
+
+        // 6. 无量空跌：股价下跌但无大单承接，缩量阴跌
+        if (snapshot.changePct < -0.3 && snapshot.largeAsksCount == 0 &&
+            snapshot.largeBidsCount == 0 && snapshot.volRatio < 0.7) {
+            patterns.add(Pattern(PatternType.SILENT_DROP,
+                "无量空跌，缩量阴跌中，承接盘匮乏，注意风险。"))
+        }
+
         return patterns
     }
 
@@ -264,7 +202,7 @@ class AIAnalyzer(
 
     fun shouldTriggerDualAnalysis(): Boolean {
         if (recentData.size < 10) return false
-        return calculateChaosScore(recentData.toList()) >= 4
+        return calculateChaosScore(recentData.toList()) >= 2
     }
 
     fun calculateChaosScore(snapshots: List<MarketSnapshot>): Int {
@@ -292,6 +230,16 @@ class AIAnalyzer(
 
         // 4. 振幅极小但成交不缩：压抑，可能酝酿突破
         if (Math.abs(latest.changePct) < 0.15 && latest.volRatio in 0.9..1.2) score += 1
+
+        // 5. 横盘无聊：过去10个快照振幅极小且量比缩减 → 触发分析
+        if (snapshots.size >= 10) {
+            val recent10 = snapshots.takeLast(10)
+            val high = recent10.maxOf { it.price }
+            val low = recent10.minOf { it.price }
+            val amplitude = if (low > 0) (high - low) / low * 100 else 100.0
+            val avgVolRatio = recent10.map { it.volRatio }.average()
+            if (amplitude < 0.2 && avgVolRatio < 0.8) score += 2
+        }
 
         return score
     }
@@ -361,6 +309,7 @@ class AIAnalyzer(
             append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
             if (dailyHistory.isNotBlank()) append("近5日K线：${dailyHistory}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
+            if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
             append("综合技术面、K线形态、盘口博弈和大盘环境，判断多空方向。")
         }
     }
@@ -375,6 +324,7 @@ class AIAnalyzer(
             append("卖盘${latest.largeAsksCount}单对买盘${latest.largeBidsCount}单。")
             if (dailyHistory.isNotBlank()) append("近日K线：${dailyHistory}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
+            if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
             append("综合资金流向、主力意图、近日K线趋势和大盘环境，判断多空方向。")
         }
     }
@@ -534,8 +484,8 @@ class AIAnalyzer(
         return patterns[Random.nextInt(patterns.size)]
     }
 
-    // ── 构建深度分析提示词（AI 自主判断关键信号，不限定角度） ──
-    private fun buildPrompt(context: MarketContext = MarketContext(), alertContext: String = ""): String {
+    // ── 构建深度分析提示词（含大盘锚定+AI记忆） ──
+    private fun buildPrompt(context: MarketContext = MarketContext(), alertContext: String = "", shanghaiIndex: String = ""): String {
         if (recentData.isEmpty()) return ""
         val latest = recentData.last()
         val history = recentData.toList()
@@ -610,13 +560,15 @@ class AIAnalyzer(
             if (context.alertStats.isNotBlank()) append("近期异动：${context.alertStats}。")
             if (context.newsHeadline.isNotBlank()) append("消息面：${context.newsHeadline}。")
             if (context.fundFlow.isNotBlank()) append("资金：${context.fundFlow}${context.fundFlowAmount}。")
+            if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
+            if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
             append("从以上数据中挑最值得说的1-2个关键信号，用2-4句口语点评。")
-            append("优先关注量价背离、盘口异动、变盘信号。像老股民跟朋友聊盘面，直接说出判断。不超过80字。")
+            append("优先关注量价背离、盘口异动、变盘信号、相对强弱。像老股民跟朋友聊盘面，直接说出判断。不超过80字。")
         }
     }
 
     /** 异动后的专用深度分析提示词 */
-    fun buildPostAlertPrompt(alertText: String, snapshots: List<MarketSnapshot>): String {
+    fun buildPostAlertPrompt(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = ""): String {
         if (snapshots.isEmpty()) return ""
         val latest = snapshots.last()
         val trend = if (snapshots.size >= 2) {
@@ -629,6 +581,8 @@ class AIAnalyzer(
             append("异动后当前${latest.price}元，${trend}中。")
             append("量比${latest.volRatio}，成交${latest.amountStr}。")
             append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
+            if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
+            if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
             append("分析这波异动可能是什么意图？后续走势怎么看？")
             append("用2-3句口语点评，像老股民复盘异动，不超过60字。")
         }
@@ -688,21 +642,18 @@ class AIAnalyzer(
     }
 
     /** 深度分析：综合技术面+盘口博弈+K线+大盘，AI自主判断关键信号 */
-    fun generateSummary(context: MarketContext = MarketContext(), callback: (String?) -> Unit) {
+    fun generateSummary(context: MarketContext = MarketContext(), shanghaiIndex: String = "", callback: (String?) -> Unit) {
         val config = aiConfigProvider()
         if (!config.enabled || config.apiKey.isBlank()) {
             callback(null)
             return
         }
 
-        val prompt = buildPrompt(context)
+        val prompt = buildPrompt(context, shanghaiIndex = shanghaiIndex)
         if (prompt.isEmpty()) {
             callback(null)
             return
         }
-
-        // 人设 + 分析任务 + 技术信号
-        val (_, systemPrompt) = pickPersonaAndTask()
 
         apiExecutor.execute {
             try {
@@ -711,7 +662,7 @@ class AIAnalyzer(
                     |{
                     |  "model": "${config.model}",
                     |  "messages": [
-                    |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
+                    |    {"role": "system", "content": ${toJsonStr(FIXED_PERSONA)}},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
                     |  ],
                     |  "max_tokens": 120,
@@ -736,6 +687,7 @@ class AIAnalyzer(
                 val content = extractContent(body)
                 if (content != null) {
                     onLog("🤖 AI: ✓ ${content.take(40)}...")
+                    lastStance = extractStanceFromContent(content)
                 } else {
                     onLog("🤖 AI: ✗ 解析响应失败 body=${body?.take(120) ?: "null"}")
                 }
@@ -748,21 +700,20 @@ class AIAnalyzer(
     }
 
     /** 异动后专用AI分析（独立prompt，强调异动背景） */
-    fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, callback: (String?) -> Unit) {
+    fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", callback: (String?) -> Unit) {
         val config = aiConfigProvider()
         if (!config.enabled || config.apiKey.isBlank()) {
             callback(null)
             return
         }
 
-        val prompt = buildPostAlertPrompt(alertText, snapshots)
+        val prompt = buildPostAlertPrompt(alertText, snapshots, shanghaiIndex)
         if (prompt.isEmpty()) { callback(null); return }
 
-        val (_, systemPrompt) = pickPersonaAndTask()
         val postAlertPrompt = buildString {
             append("刚发生异动需要复盘。")
-            append(systemPrompt)
-            append("结合异动背景和当前盘面数据，用2-3句口语给出判断，不超过60字。")
+            append(FIXED_PERSONA)
+            append("结合异动背景和当前盘面数据，用2句口语给出判断，不超过60字。")
         }
 
         apiExecutor.execute {
@@ -807,6 +758,19 @@ class AIAnalyzer(
     fun shutdown() {
         apiExecutor.shutdownNow()
         dualExecutor.shutdownNow()
+    }
+
+    // ── 从 AI 回复中提取立场标签 ──
+
+    private fun extractStanceFromContent(content: String): String? {
+        return when {
+            "【看多】" in content -> "看多"
+            "【看空】" in content -> "看空"
+            "【多空焦灼】" in content -> "多空焦灼"
+            "看多" in content.take(6) -> "看多"
+            "看空" in content.take(6) -> "看空"
+            else -> null
+        }
     }
 
     // ── 用 Android 内置 JSONObject 提取 API 响应中的 content ──

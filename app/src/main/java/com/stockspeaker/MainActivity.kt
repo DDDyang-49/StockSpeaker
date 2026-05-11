@@ -244,16 +244,16 @@ private fun MonitorTab(
     configManager: ConfigManager
 ) {
     Column(
-        Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+        Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp)
     ) {
-        // 行情区
-        Column {
+        // 行情区 + AI日志（可滚动，占据剩余空间）
+        Column(
+            Modifier.weight(1f).verticalScroll(rememberScrollState())
+        ) {
             Spacer(Modifier.height(8.dp))
             if (state.isRunning && state.stockName.isNotEmpty()) {
                 PriceCard(state)
             } else {
-                // 未启动时的占位
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
@@ -268,64 +268,62 @@ private fun MonitorTab(
             }
             Spacer(Modifier.height(12.dp))
             StatusSection(state)
-        }
-
-        // 按钮区
-        Column {
-            // 异动通知提示
-            if (state.isRunning && state.statusText.contains("AI异动")) {
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = StockColors.priceUpBg,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-                ) {
-                    Text(
-                        "点击通知栏「关闭提醒」可退出异动播报",
-                        modifier = Modifier.padding(10.dp),
-                        fontSize = 12.sp, color = StockColors.priceUp, textAlign = TextAlign.Center
-                    )
-                }
-            }
-
-            Button(
-                onClick = {
-                    if (state.isRunning) StockMonitorService.stop(ctx)
-                    else {
-                        val rawCode = code.trim()
-                        if (rawCode.isBlank()) return@Button
-                        if (rawCode.all { it.isDigit() }) {
-                            val cfg = buildConfig()
-                            configManager.save(cfg)
-                            configManager.addStockCodeToHistory(cfg.stockCode, cfg.stockCode)
-                            StockMonitorService.start(ctx)
-                        } else {
-                            Thread {
-                                val result = StockFetcher.searchStock(rawCode)
-                                val resolved = result?.first ?: rawCode
-                                val name = result?.second ?: rawCode
-                                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                    val cfg = buildConfig().copy(stockCode = resolved)
-                                    configManager.save(cfg)
-                                    configManager.addStockCodeToHistory(resolved, name)
-                                    StockMonitorService.start(ctx)
-                                }
-                            }.start()
-                        }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (state.isRunning) Color(0xFF991B1B) else MaterialTheme.colorScheme.primary
-                )
-            ) {
-                Text(
-                    if (state.isRunning) "停止盯盘" else "开始自动盯盘",
-                    fontSize = 17.sp, fontWeight = FontWeight.SemiBold
-                )
-            }
             Spacer(Modifier.height(8.dp))
         }
+
+        // 按钮区（永远吸底）
+        if (state.isRunning && state.statusText.contains("AI异动")) {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = StockColors.priceUpBg,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+            ) {
+                Text(
+                    "点击通知栏「关闭提醒」可退出异动播报",
+                    modifier = Modifier.padding(10.dp),
+                    fontSize = 12.sp, color = StockColors.priceUp, textAlign = TextAlign.Center
+                )
+            }
+        }
+
+        Button(
+            onClick = {
+                if (state.isRunning) StockMonitorService.stop(ctx)
+                else {
+                    val rawCode = code.trim()
+                    if (rawCode.isBlank()) return@Button
+                    if (rawCode.all { it.isDigit() }) {
+                        val cfg = buildConfig()
+                        configManager.save(cfg)
+                        configManager.addStockCodeToHistory(cfg.stockCode, cfg.stockCode)
+                        StockMonitorService.start(ctx)
+                    } else {
+                        Thread {
+                            val result = StockFetcher.searchStock(rawCode)
+                            val resolved = result?.first ?: rawCode
+                            val name = result?.second ?: rawCode
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                val cfg = buildConfig().copy(stockCode = resolved)
+                                configManager.save(cfg)
+                                configManager.addStockCodeToHistory(resolved, name)
+                                StockMonitorService.start(ctx)
+                            }
+                        }.start()
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (state.isRunning) Color(0xFF991B1B) else MaterialTheme.colorScheme.primary
+            )
+        ) {
+            Text(
+                if (state.isRunning) "停止盯盘" else "开始自动盯盘",
+                fontSize = 17.sp, fontWeight = FontWeight.SemiBold
+            )
+        }
+        Spacer(Modifier.height(8.dp))
     }
 }
 
