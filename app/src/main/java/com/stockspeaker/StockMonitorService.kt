@@ -56,6 +56,7 @@ class StockMonitorService : Service() {
     private var lastSpokenPrice = 0.0  // 箱体静默：上次完整播报时的价格
     private var lastAlertSpeakTime = 0L  // 最近一次异动时间（用于跟进逻辑，非冷却）
     private var lastHandAlertTime = 0L    // 大单异动冷却
+    private var lastAlertHand = 0          // 上次报警的大单手数（阶梯报警用）
     private var lastSpeedAlertTime = 0L   // 涨速异动冷却
     private var lastPatternAlertTime = 0L // AI异动冷却
     private var alertActive = false      // 异动进行中，需等待平复
@@ -146,7 +147,7 @@ class StockMonitorService : Service() {
         try { wakeLock?.acquire() } catch (_: Exception) {}
         val cm = ConfigManager(this); config = cm.load()
         cm.setMonitoringActive(true)
-        lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; lastPrice = 0.0; lastSpokenPrice = 0.0; intervalLargeEvents.clear()
+        lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; lastPrice = 0.0; lastSpokenPrice = 0.0; lastAlertHand = 0; intervalLargeEvents.clear()
         normalBroadcastCount = 0; pendingAiSummary = null; aiRequestInFlight = false
         lastFillInTime = 0L; fillInCount = 0; lastDualAnalysisTime = 0L
         postAlertPhase = 0; normalDeferred = false; lastAlertText = ""
@@ -218,7 +219,7 @@ class StockMonitorService : Service() {
         val speed = if (lastChangePct != 0.0) Math.round((data.changePct - lastChangePct) * 100.0) / 100.0 else 0.0
         val prevPrice = lastPrice
         lastTotalVol = data.totalVol; lastChangePct = data.changePct; lastPrice = data.price
-        val dynThreshold = getDynamicThreshold(data.turnover)
+        val dynThreshold = getDynamicThreshold(data.turnover, data.volRatio)
         val now = System.currentTimeMillis()
         val nowStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(now))
         val absSpeed = Math.abs(speed)
@@ -258,7 +259,9 @@ class StockMonitorService : Service() {
         val alertCooldownMs = 30000L
         var alertSpoken = false
         var alertText = ""
-        if (currentHand >= dynThreshold && now - lastHandAlertTime >= alertCooldownMs) {
+        val timePassed = now - lastHandAlertTime >= alertCooldownMs
+        val isBiggerOrder = lastAlertHand > 0 && currentHand >= (lastAlertHand * 1.5)
+        if (currentHand >= dynThreshold && (timePassed || isBiggerOrder)) {
             val (dirLabel, action) = when {
                 prevPrice > 0 && data.price > prevPrice -> "大单" to "向上扫货"
                 prevPrice > 0 && data.price < prevPrice -> "大单" to "向下砸盘"
@@ -267,6 +270,7 @@ class StockMonitorService : Service() {
             alertText = "${alertPrefix()}${spokenHand(currentHand)}${dirLabel}${action}！"
             ttsEngine.speakAlert(alertText)
             alertSpoken = true; lastHandAlertTime = now; lastAlertSpeakTime = now
+            lastAlertHand = currentHand
         }
         if (!alertSpoken && absSpeed >= config.speedAlertThreshold && now - lastSpeedAlertTime >= alertCooldownMs) {
             val dir = if (speed > 0) "快速拉升" else "快速下跌"
@@ -278,7 +282,7 @@ class StockMonitorService : Service() {
         if (!alertSpoken && now - lastPatternAlertTime >= alertCooldownMs) {
             try {
                 val snapshot = MarketSnapshot(now, data.price, data.changePct, speed, data.volRatio,
-                    data.amountStr, currentHand, data.largeAsksSpeak.size, data.largeBidsSpeak.size)
+                    data.amountStr, currentHand, data.largeAsksSpeak.size, data.largeBidsSpeak.size, data.turnover)
                 val patterns = aiAnalyzer.feed(snapshot)
                 if (patterns.isNotEmpty()) {
                     alertText = alertPrefix() + patterns.joinToString("") { it.speakText }
@@ -536,17 +540,21 @@ class StockMonitorService : Service() {
 
     // ── 换手率动态阈值（防开盘乱叫，大小盘自适应） ──
 
-    private fun getDynamicThreshold(turnover: Double): Int {
+    private fun getDynamicThreshold(turnover: Double, volRatio: Double): Int {
         val base = config.largeOrderThreshold
         val cal = java.util.Calendar.getInstance()
         val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
         val minute = cal.get(java.util.Calendar.MINUTE)
-        // 换手率系数（9:30-10:00 换手率没走出来，不做缩放）
+        // 换手率系数
+        // 9:30-10:30 换手率绝对值太低无意义，只看量比
+        // 10:30 之后恢复原逻辑，但底部条件必须换手+量比双低才降阈值
         val turnoverCoef = when {
-            hour == 9 && minute in 30..59 || hour == 10 && minute == 0 -> 1.0
+            hour == 9 && minute >= 30 || hour == 10 && minute < 30 -> {
+                if (volRatio > 2.0) 1.5 else 1.0
+            }
             turnover > 15 -> 2.5
             turnover >= 8 -> 1.5
-            turnover < 2 -> 0.6
+            turnover < 2 && volRatio < 0.8 -> 0.6
             else -> 1.0
         }
         // 时间系数：早盘噪音大→提阈值，午后瞌睡期→降阈值捕捉偷袭

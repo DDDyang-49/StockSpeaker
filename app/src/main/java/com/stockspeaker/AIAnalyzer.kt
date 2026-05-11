@@ -20,17 +20,17 @@ data class MarketSnapshot(
     val amountStr: String,
     val currentHand: Int,
     val largeAsksCount: Int,
-    val largeBidsCount: Int
+    val largeBidsCount: Int,
+    val turnover: Double
 )
 
 // ── 异动模式 ──
 
 enum class PatternType {
-    VOLUME_BREAKOUT,   // 放量突破
+    VOLUME_BREAKOUT,   // 放量突破 / 平地惊雷
     SPEED_ALERT,       // 涨速异动
     SHARP_REVERSAL,    // 高位急转
-    BIG_ORDER_ALERT,   // 大单异动
-    FAKE_BULL,         // 诱多：大单扫货但股价滞涨
+    FAKE_BULL,         // 诱多：买单凶猛但价格滞涨
     SILENT_DROP        // 无量空跌：缩量阴跌无承接
 }
 
@@ -62,9 +62,7 @@ class AIAnalyzer(
     private val onLog: (String) -> Unit = {},
     private val aiTwoConfigProvider: () -> AiConfig = { AiConfig() }
 ) {
-    private val recentData = ArrayDeque<MarketSnapshot>(20)
-    private var lastLargeAskCount = 0
-    private var lastLargeBidCount = 0
+    private val recentData = ArrayDeque<MarketSnapshot>(90)
     private val apiExecutor = Executors.newSingleThreadExecutor()
     private val dualExecutor = Executors.newFixedThreadPool(2)
     private val httpClient = OkHttpClient.Builder()
@@ -120,72 +118,78 @@ class AIAnalyzer(
         "大宗商品价格波动，相关个股异动"
     )
 
-    /** 喂入一条行情数据，返回本次检测到的异动列表（实时检测，无冷却） */
+    /** 喂入一条行情数据，返回本次检测到的异动列表（双模自适应，实时检测，无冷却） */
     fun feed(snapshot: MarketSnapshot): List<Pattern> {
         recentData.addLast(snapshot)
-        if (recentData.size > 20) recentData.removeFirst()
+        if (recentData.size > 90) recentData.removeFirst()
 
         val patterns = mutableListOf<Pattern>()
 
-        // 1. 放量突破：量比 >= 2.0 且 涨跌幅 >= 1.0%
-        if (snapshot.volRatio >= 2.0 && Math.abs(snapshot.changePct) >= 1.0) {
-            val dir = if (snapshot.changePct > 0) "放量拉升" else "放量下砸"
-            patterns.add(Pattern(PatternType.VOLUME_BREAKOUT,
-                "$dir，量比${snapshot.volRatio}，成交${snapshot.amountStr}。"))
-        }
+        // ── 状态判定：热门活跃 vs 底部潜伏 ──
+        val isHot = snapshot.turnover > 10.0 || snapshot.volRatio > 1.8
 
-        // 2. 涨速异动：每秒涨速 >= 1.0%
+        // ═══════════════════════════════════════
+        // 1. 涨速异动 (SPEED_ALERT) —— 双模阈值
+        // ═══════════════════════════════════════
+        val speedThreshold = if (isHot) 1.5 else 0.8
         val absSpeed = Math.abs(snapshot.speed)
-        if (absSpeed >= 1.0) {
-            val desc = if (snapshot.speed > 0) "快速拉升" else "快速下跌"
+        if (absSpeed >= speedThreshold) {
+            val dir = if (snapshot.speed > 0) "拉升" else "下跌"
             patterns.add(Pattern(PatternType.SPEED_ALERT,
-                "${desc}，涨速${String.format("%.1f", absSpeed)}%每秒。"))
+                "直线脉冲！当前涨速达${String.format("%.1f", absSpeed)}%，${dir}中。"))
         }
 
-        // 3. 高位急转：过去5个快照内从最高点回落 >= 0.5%
-        if (recentData.size >= 5) {
-            val last5 = recentData.takeLast(5)
-            val maxPrice = last5.maxOf { it.price }
-            val reversal = (maxPrice - snapshot.price) / maxPrice * 100.0
-            if (reversal >= 0.5) {
+        // ═══════════════════════════════════════
+        // 2. 高位急转 (SHARP_REVERSAL) —— 防核按钮与假突破
+        // ═══════════════════════════════════════
+        if (recentData.size >= 15) {
+            val last15 = recentData.takeLast(15)
+            val maxPrice = last15.maxOf { it.price }
+            val dropFromMax = (maxPrice - snapshot.price) / maxPrice * 100.0
+            val heightThreshold = if (isHot) 4.0 else 2.0
+            val dropThreshold = if (isHot) 1.5 else 0.8
+            if (snapshot.changePct >= heightThreshold && dropFromMax >= dropThreshold && snapshot.volRatio >= 1.0) {
                 patterns.add(Pattern(PatternType.SHARP_REVERSAL,
-                    "高位急转，${String.format("%.1f", reversal)}个点回落，注意风险。"))
+                    "高位急转！冲高后突发放量砸盘，警惕见顶或假突破！"))
             }
         }
 
-        // 4. 大单异动：卖盘或买盘大单档数骤增 >= 3 档
-        val askDelta = snapshot.largeAsksCount - lastLargeAskCount
-        val bidDelta = snapshot.largeBidsCount - lastLargeBidCount
-        lastLargeAskCount = snapshot.largeAsksCount
-        lastLargeBidCount = snapshot.largeBidsCount
-        if (askDelta >= 3 || bidDelta >= 3) {
-            val parts = mutableListOf<String>()
-            if (askDelta >= 3) parts.add("卖盘突增${askDelta}档大压单")
-            if (bidDelta >= 3) parts.add("买盘突增${bidDelta}档大托单")
-            patterns.add(Pattern(PatternType.BIG_ORDER_ALERT,
-                "大单异动：${parts.joinToString("，")}。"))
+        // ═══════════════════════════════════════
+        // 3. 底部放量突破 (VOLUME_BREAKOUT) —— 抓潜伏股启动点
+        // ═══════════════════════════════════════
+        if (!isHot && snapshot.volRatio >= 2.5 && snapshot.speed > 0.5 &&
+            snapshot.changePct in 0.0..3.0) {
+            patterns.add(Pattern(PatternType.VOLUME_BREAKOUT,
+                "平地惊雷！底部突然放量拉升，量比达${String.format("%.1f", snapshot.volRatio)}，注意异动试盘！"))
         }
 
-        // 5. 诱多检测：连续大单扫货但股价滞涨（近10快照买单档数累计增≥3次，价格变化<0.2%）
-        if (recentData.size >= 10) {
-            val recent10 = recentData.takeLast(10)
-            val oldestSnapshot = recent10.first()
-            val priceChangePct = Math.abs((snapshot.price - oldestSnapshot.price) / oldestSnapshot.price * 100)
+        // ═══════════════════════════════════════
+        // 4. 诱多 (FAKE_BULL) —— 买单凶猛但价格滞涨
+        // ═══════════════════════════════════════
+        if (recentData.size >= 15) {
+            val last15 = recentData.takeLast(15)
+            val priceChangePct = Math.abs((snapshot.price - last15.first().price) / last15.first().price * 100)
             var bidIncreaseCount = 0
-            for (i in 1 until recent10.size) {
-                if (recent10[i].largeBidsCount > recent10[i - 1].largeBidsCount) bidIncreaseCount++
+            for (i in 1 until last15.size) {
+                if (last15[i].largeBidsCount > last15[i - 1].largeBidsCount) bidIncreaseCount++
             }
-            if (bidIncreaseCount >= 3 && priceChangePct < 0.2 && snapshot.largeBidsCount > 0) {
+            if (bidIncreaseCount >= 3 && priceChangePct < 0.2 && snapshot.largeAsksCount >= 2) {
                 patterns.add(Pattern(PatternType.FAKE_BULL,
-                    "注意！连续大单扫货但股价滞涨，谨防主力诱多出货！"))
+                    "盘口异常，买单凶猛但上方压单不减，价格滞涨，谨防主力诱多派发！"))
             }
         }
 
-        // 6. 无量空跌：股价下跌但无大单承接，缩量阴跌
-        if (snapshot.changePct < -0.3 && snapshot.largeAsksCount == 0 &&
-            snapshot.largeBidsCount == 0 && snapshot.volRatio < 0.7) {
-            patterns.add(Pattern(PatternType.SILENT_DROP,
-                "无量空跌，缩量阴跌中，承接盘匮乏，注意风险。"))
+        // ═══════════════════════════════════════
+        // 5. 无量空跌 (SILENT_DROP) —— 下方买盘真空
+        // ═══════════════════════════════════════
+        if (recentData.size >= 10) {
+            val last10 = recentData.takeLast(10)
+            val cumChange = (snapshot.price - last10.first().price) / last10.first().price * 100.0
+            val dropThreshold = if (isHot) -1.5 else -0.8
+            if (cumChange <= dropThreshold && snapshot.volRatio < 0.8 && snapshot.largeBidsCount == 0) {
+                patterns.add(Pattern(PatternType.SILENT_DROP,
+                    "警报！下方买盘真空，连续缩量阴跌，谨防资金踩踏。"))
+            }
         }
 
         return patterns
@@ -205,7 +209,7 @@ class AIAnalyzer(
     fun getRecentSnapshots(): List<MarketSnapshot> = recentData.toList()
 
     fun shouldTriggerDualAnalysis(): Boolean {
-        if (recentData.size < 10) return false
+        if (recentData.size < 30) return false
         return calculateChaosScore(recentData.toList()) >= 2
     }
 

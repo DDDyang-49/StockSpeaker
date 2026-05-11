@@ -4,7 +4,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
-import kotlin.random.Random
 
 // ── 全局情绪数据类（可序列化，后续可持久化） ──
 
@@ -58,7 +57,7 @@ data class GlobalSentiment(
 
 // ═══════════════════════════════════════════
 // 全局情绪抓取器
-// 优先级：真实API → Mock（兜底）
+// 只使用真实API，网络异常时返回空值
 // 所有网络请求 5 秒超时，独立线程执行
 // ═══════════════════════════════════════════
 
@@ -69,7 +68,7 @@ object MarketSentimentFetcher {
         .readTimeout(5, TimeUnit.SECONDS)
         .build()
 
-    /** 一键拉取全部情绪数据（真实API + Mock兜底） */
+    /** 一键拉取全部情绪数据（网络异常时返回空值，不做假数据兜底） */
     fun fetchAll(): GlobalSentiment {
         val breadth = fetchMarketBreadth()
         val sectors = fetchLeadingSectors()
@@ -98,17 +97,17 @@ object MarketSentimentFetcher {
                 .header("Referer", "https://quote.eastmoney.com/")
                 .build()
             val resp = client.newCall(req).execute()
-            val body = resp.body?.string() ?: return mockBreadth()
+            val body = resp.body?.string() ?: return Quadruple(0, 0, 0, 0)
             val json = JSONObject(body)
-            val data = json.optJSONObject("data") ?: return mockBreadth()
+            val data = json.optJSONObject("data") ?: return Quadruple(0, 0, 0, 0)
             val up = data.optInt("f47", 0)
             val down = data.optInt("f48", 0)
             val limitUp = data.optInt("f50", 0)
             val limitDown = data.optInt("f51", 0)
-            if (up == 0 && down == 0) return mockBreadth()
+            if (up == 0 && down == 0) return Quadruple(0, 0, 0, 0)
             return Quadruple(up, down, limitUp, limitDown)
         } catch (_: Exception) {
-            return mockBreadth()
+            return Quadruple(0, 0, 0, 0)
         }
     }
 
@@ -122,10 +121,10 @@ object MarketSentimentFetcher {
                 .header("Referer", "https://quote.eastmoney.com/")
                 .build()
             val resp = client.newCall(req).execute()
-            val body = resp.body?.string() ?: return mockSectors()
+            val body = resp.body?.string() ?: return emptyList()
             val json = JSONObject(body)
             val data = json.optJSONObject("data")
-            val diffs = data?.optJSONArray("diff") ?: return mockSectors()
+            val diffs = data?.optJSONArray("diff") ?: return emptyList()
             val sectors = mutableListOf<String>()
             for (i in 0 until minOf(diffs.length(), 5)) {
                 val item = diffs.optJSONObject(i) ?: continue
@@ -135,9 +134,9 @@ object MarketSentimentFetcher {
                     sectors.add("$name+${"%.1f".format(pct)}%")
                 }
             }
-            return if (sectors.isNotEmpty()) sectors.take(3) else mockSectors()
+            return if (sectors.isNotEmpty()) sectors.take(3) else emptyList()
         } catch (_: Exception) {
-            return mockSectors()
+            return emptyList()
         }
     }
 
@@ -152,19 +151,18 @@ object MarketSentimentFetcher {
                 .header("Referer", "https://quote.eastmoney.com/")
                 .build()
             val resp = client.newCall(req).execute()
-            val body = resp.body?.string() ?: return mockTopStock()
+            val body = resp.body?.string() ?: return Pair("", 0)
             val json = JSONObject(body)
             val data = json.optJSONObject("data")
-            val diffs = data?.optJSONArray("diff") ?: return mockTopStock()
-            if (diffs.length() == 0) return mockTopStock()
+            val diffs = data?.optJSONArray("diff") ?: return Pair("", 0)
+            if (diffs.length() == 0) return Pair("", 0)
             val item = diffs.optJSONObject(0)
             val name = item?.optString("f14", "") ?: ""
-            // f8 可能是涨停次数/连板数，具体字段视API版本而定
             val boards = item?.optInt("f8", 0) ?: 0
-            if (name.isBlank() || boards == 0) return mockTopStock()
+            if (name.isBlank() || boards == 0) return Pair("", 0)
             return Pair(name, boards)
         } catch (_: Exception) {
-            return mockTopStock()
+            return Pair("", 0)
         }
     }
 
@@ -179,10 +177,10 @@ object MarketSentimentFetcher {
                 .header("User-Agent", "Mozilla/5.0")
                 .build()
             val resp = client.newCall(req).execute()
-            val body = resp.body?.string() ?: return mockFlashNews()
+            val body = resp.body?.string() ?: return emptyList()
             val json = JSONObject(body)
             val data = json.optJSONObject("result")?.optJSONArray("data")
-                ?: return mockFlashNews()
+                ?: return emptyList()
             val keywords = listOf("拉升", "涨停", "跌停", "炸板", "板块", "封板",
                 "异动", "直线", "走强", "走弱", "跳水", "反弹", "触板", "连板")
             val result = mutableListOf<String>()
@@ -197,82 +195,11 @@ object MarketSentimentFetcher {
                     if (result.size >= 5) break
                 }
             }
-            return if (result.isNotEmpty()) result else mockFlashNews()
+            return if (result.isNotEmpty()) result else emptyList()
         } catch (_: Exception) {
-            return mockFlashNews()
+            return emptyList()
         }
     }
-
-    // ═══════════════════════════════════════════
-    // Mock 兜底数据（真实API失败时使用）
-    // ═══════════════════════════════════════════
-
-    private fun mockBreadth(): Quadruple<Int, Int, Int, Int> {
-        val cal = java.util.Calendar.getInstance()
-        val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
-        val minute = cal.get(java.util.Calendar.MINUTE)
-        // A股交易时间：9:30-11:30, 13:00-15:00
-        val isTrading = (hour == 9 && minute >= 30) || hour == 10 ||
-                (hour == 11 && minute <= 30) || hour == 13 || hour == 14 ||
-                (hour == 15 && minute == 0)
-        if (!isTrading) return Quadruple(0, 0, 0, 0)
-        val upBase = 1800 + Random.nextInt(-200, 200)
-        val downBase = 2800 + Random.nextInt(-300, 300)
-        val limitUp = 40 + Random.nextInt(-15, 30)
-        val limitDown = Random.nextInt(1, 8)
-        return Quadruple(upBase, downBase, limitUp, limitDown)
-    }
-
-    private fun mockSectors(): List<String> {
-        val pools = listOf(
-            listOf("存储芯片+3.2%", "光刻机+2.8%", "先进封装+2.1%"),
-            listOf("AI大模型+4.1%", "算力租赁+3.5%", "数据要素+2.9%"),
-            listOf("低空经济+3.8%", "商业航天+2.6%", "无人机+2.2%"),
-            listOf("创新药+2.9%", "医疗器械+2.4%", "CXO+2.0%"),
-            listOf("固态电池+3.6%", "光伏逆变器+2.7%", "储能+2.3%"),
-            listOf("机器人+4.5%", "工业母机+3.1%", "传感器+2.5%"),
-            listOf("智能驾驶+3.3%", "汽车零部件+2.8%", "一体化压铸+2.1%")
-        )
-        return pools[Random.nextInt(pools.size)]
-    }
-
-    private fun mockTopStock(): Pair<String, Int> {
-        val candidates = listOf(
-            "克来机电" to 8, "圣龙股份" to 7, "中视传媒" to 6,
-            "大唐发电" to 6, "天龙股份" to 5, "深中华A" to 5,
-            "清源股份" to 4, "亚世光电" to 4, "日久光电" to 4,
-            "东安动力" to 3, "惠发食品" to 3, "南京商旅" to 3
-        )
-        return candidates[Random.nextInt(candidates.size)]
-    }
-
-    private fun mockFlashNews(): List<String> {
-        val pools = listOf(
-            listOf(
-                "半导体板块午后异动拉升，存储芯片方向领涨",
-                "AI概念股持续走强，多股涨停封板",
-                "低空经济概念快速跳水，前期高位股炸板回落",
-                "券商板块异动拉升，带动指数翻红",
-                "北向资金快速流入，权重股获大单扫货"
-            ),
-            listOf(
-                "光伏板块触底反弹，龙头直线拉升封板",
-                "机器人概念持续活跃，板块内多股涨停",
-                "医药板块走弱，CXO方向领跌",
-                "算力概念再度走强，资金回流明显",
-                "次新股午后异动，多股直线拉升"
-            ),
-            listOf(
-                "消费电子板块异动，华为产业链集体拉升",
-                "汽车零部件板块分化，高位股炸板",
-                "固态电池概念走强，板块涨幅居前",
-                "中字头板块异动，中国科传直线涨停",
-                "高标股炸板潮，短线情绪急转直下"
-            )
-        )
-        return pools[Random.nextInt(pools.size)]
-    }
-}
 
 /** 四元组（避免引入 Kotlin stdlib 之外的依赖） */
 private data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
