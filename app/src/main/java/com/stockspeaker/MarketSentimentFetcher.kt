@@ -203,3 +203,4 @@ object MarketSentimentFetcher {
 
 /** 四元组（避免引入 Kotlin stdlib 之外的依赖） */
 private data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
+}
