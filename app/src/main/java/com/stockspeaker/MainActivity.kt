@@ -168,22 +168,22 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
         topBar = {
             TopAppBar(
                 title = { Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("摸鱼听盘", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                    Text("摸鱼听盘", fontWeight = FontWeight.Bold)
                     Spacer(Modifier.width(8.dp))
-                    Surface(shape = RoundedCornerShape(2.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)) {
-                            Box(Modifier.size(5.dp).clip(CircleShape).background(if (state.isRunning) StockColors.runningGreen else Color(0xFF666666)))
-                            Spacer(Modifier.width(4.dp))
-                            Text("v$versionName", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontFamily = FontFamily.Monospace)
+                    Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)) {
+                            Box(Modifier.size(6.dp).clip(CircleShape).background(if (state.isRunning) Color(0xFF34D399) else Color(0xFF6B7280)))
+                            Spacer(Modifier.width(5.dp))
+                            Text("v$versionName", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
                         }
                     }
                 }},
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF000000))
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         },
         bottomBar = {
             NavigationBar(
-                containerColor = Color(0xFF000000),
+                containerColor = MaterialTheme.colorScheme.surface,
                 tonalElevation = 0.dp
             ) {
                 NavigationBarItem(
@@ -192,11 +192,9 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                     icon = { Icon(Icons.Filled.Home, "盯盘") },
                     label = { Text("盯盘") },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = Color.White,
-                        selectedTextColor = Color.White,
-                        indicatorColor = StockColors.cardSurface,
-                        unselectedIconColor = Color(0xFF666666),
-                        unselectedTextColor = Color(0xFF666666)
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer
                     )
                 )
                 NavigationBarItem(
@@ -205,16 +203,14 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                     icon = { Icon(Icons.Filled.Settings, "设置") },
                     label = { Text("设置") },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = Color.White,
-                        selectedTextColor = Color.White,
-                        indicatorColor = StockColors.cardSurface,
-                        unselectedIconColor = Color(0xFF666666),
-                        unselectedTextColor = Color(0xFF666666)
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer
                     )
                 )
             }
         },
-        containerColor = Color(0xFF000000)
+        containerColor = MaterialTheme.colorScheme.background
     ) { pad ->
         when (selectedTab) {
             0 -> MonitorTab(pad, state, enabled, ctx, code, { buildConfig() }, configManager)
@@ -258,26 +254,16 @@ private fun MonitorTab(
             if (state.isRunning && state.stockName.isNotEmpty()) {
                 PriceCard(state)
             } else {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(180.dp)
-                        .border(0.5.dp, StockColors.cardBorder, RoundedCornerShape(2.dp))
-                        .background(StockColors.cardSurface, RoundedCornerShape(2.dp)),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                    modifier = Modifier.fillMaxWidth().height(200.dp)
                 ) {
-                    Text(
-                        "TICKER OFF",
-                        fontSize = 16.sp, fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                        letterSpacing = 4.sp
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "输入代码，点击下方按钮开始盯盘",
-                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                    )
+                    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                        Text("📈", fontSize = 48.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Text("点击下方按钮开始盯盘", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -288,7 +274,7 @@ private fun MonitorTab(
         // 按钮区（永远吸底）
         if (state.isRunning && state.statusText.contains("AI异动")) {
             Surface(
-                shape = RoundedCornerShape(2.dp),
+                shape = RoundedCornerShape(8.dp),
                 color = StockColors.priceUpBg,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
             ) {
@@ -326,17 +312,15 @@ private fun MonitorTab(
                     }
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(50.dp),
-            shape = RoundedCornerShape(2.dp),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (state.isRunning) StockColors.priceUp else Color.White,
-                contentColor = if (state.isRunning) Color.White else Color.Black
+                containerColor = if (state.isRunning) Color(0xFF991B1B) else MaterialTheme.colorScheme.primary
             )
         ) {
             Text(
                 if (state.isRunning) "停止盯盘" else "开始自动盯盘",
-                fontSize = 15.sp, fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
+                fontSize = 17.sp, fontWeight = FontWeight.SemiBold
             )
         }
         Spacer(Modifier.height(8.dp))
@@ -470,7 +454,7 @@ private fun SettingsTab(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = aiEnabled, onCheckedChange = onAi, enabled = enabled,
-                        colors = SwitchDefaults.colors(checkedTrackColor = Color.White, checkedThumbColor = Color.Black))
+                        colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
                     Spacer(Modifier.width(8.dp))
                     Text("启用AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
@@ -524,7 +508,7 @@ private fun SettingsTab(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = aiTwoEnabled, onCheckedChange = onAiTwo, enabled = enabled,
-                        colors = SwitchDefaults.colors(checkedTrackColor = Color.White, checkedThumbColor = Color.Black))
+                        colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
                     Spacer(Modifier.width(8.dp))
                     Text("启用辅AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
@@ -541,20 +525,17 @@ private fun SettingsTab(
                 if (cfg.aiTwoApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiTwoApiKey, aiTwoKeyNote)
             },
             modifier = Modifier.fillMaxWidth().height(44.dp),
-            shape = RoundedCornerShape(2.dp),
+            shape = RoundedCornerShape(12.dp),
             enabled = enabled,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = StockColors.accentGold,
-                contentColor = Color.Black
-            )
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
         ) {
-            Text("保存配置", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Text("保存配置", fontSize = 15.sp, fontWeight = FontWeight.Medium)
         }
         Spacer(Modifier.height(12.dp))
 
         // ── AI 日志 ──
         if (state.isRunning && state.aiLog.isNotEmpty()) {
-            Section("AI LOG") {
+            Section("AI 日志") {
                 Text(
                     state.aiLog.takeLast(30).joinToString("\n"),
                     fontSize = 10.sp, fontFamily = FontFamily.Monospace,
@@ -573,20 +554,19 @@ private fun SettingsTab(
 
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .border(0.5.dp, StockColors.cardBorder, RoundedCornerShape(2.dp))
-            .background(StockColors.cardSurface, RoundedCornerShape(2.dp))
-            .padding(14.dp)
+    val bg = MaterialTheme.colorScheme.surface
+    val border = MaterialTheme.colorScheme.outlineVariant
+    Surface(shape = RoundedCornerShape(14.dp), color = bg,
+        border = null,
+        shadowElevation = 0.dp,
+        modifier = Modifier.fillMaxWidth().border(1.dp, border, RoundedCornerShape(14.dp))
     ) {
-        Text(
-            title, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            letterSpacing = 2.sp
-        )
-        Spacer(Modifier.height(10.dp))
-        content()
+        Column(Modifier.padding(16.dp)) {
+            Text(title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
+            Spacer(Modifier.height(12.dp))
+            content()
+        }
     }
 }
 
@@ -600,20 +580,15 @@ private fun LabelField(
     OutlinedTextField(
         value = value, onValueChange = onValue, label = if (label.isNotEmpty()) {{ Text(label, fontSize = 13.sp) }} else null,
         enabled = enabled, modifier = modifier, singleLine = true,
-        shape = RoundedCornerShape(2.dp), suffix = suffix?.let {{ Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }},
+        shape = RoundedCornerShape(10.dp), suffix = suffix?.let {{ Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }},
         textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = textAlign),
         visualTransformation = if (isPassword) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
         trailingIcon = trailing,
         colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = Color.White,
-            unfocusedBorderColor = StockColors.cardBorder,
-            focusedLabelColor = Color(0xFF999999),
-            cursorColor = Color.White,
-            focusedTextColor = Color.White,
-            unfocusedTextColor = Color(0xFFCCCCCC),
-            unfocusedLabelColor = Color(0xFF666666),
-            disabledTextColor = Color(0xFF555555),
-            disabledBorderColor = Color(0xFF1A1A1A)
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+            focusedLabelColor = MaterialTheme.colorScheme.primary,
+            cursorColor = MaterialTheme.colorScheme.primary
         )
     )
 }
@@ -622,7 +597,7 @@ private fun LabelField(
 private fun Cb(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
         Checkbox(checked = checked, onCheckedChange = onChange, enabled = enabled,
-            colors = CheckboxDefaults.colors(checkedColor = Color.White, uncheckedColor = Color(0xFF555555), checkmarkColor = Color.Black))
+            colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary, uncheckedColor = MaterialTheme.colorScheme.outline))
         Text(label, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
     }
 }
@@ -763,16 +738,9 @@ private fun formatHand(hand: Int): String = when {
 @Composable
 private fun DataItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            value, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontFamily = FontFamily.Monospace
-        )
-        Spacer(Modifier.height(3.dp))
-        Text(
-            label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            letterSpacing = 1.sp
-        )
+        Text(value, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+        Spacer(Modifier.height(2.dp))
+        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -781,48 +749,35 @@ private fun DataItem(label: String, value: String) {
 @Composable
 private fun StatusSection(state: ServiceUiState) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        val (bgColor, textColor) = when {
-            state.statusText.contains("✗") || state.statusText.contains("⚠") ->
-                StockColors.priceUpBg to StockColors.priceUp
-            state.isRunning ->
-                StockColors.runningGreenBg to StockColors.runningGreen
-            else ->
-                StockColors.accentGoldBg to StockColors.accentGold
+        val bgColor = when {
+            state.statusText.contains("✗") || state.statusText.contains("⚠") -> Color(0xFFFDE8E8)
+            state.isRunning -> Color(0xFFE6F9F0)
+            else -> Color(0xFFFFF8E6)
         }
-        Surface(shape = RoundedCornerShape(2.dp), color = bgColor) {
+        val textColor = when {
+            state.statusText.contains("✗") || state.statusText.contains("⚠") -> StockColors.priceUp
+            state.isRunning -> StockColors.priceDown
+            else -> StockColors.accentGold
+        }
+        Surface(shape = RoundedCornerShape(20.dp), color = bgColor) {
             Text(
-                text = if (state.isRunning && state.lastSpeakTime.isNotEmpty())
-                    "◉ 上次播报 ${state.lastSpeakTime}"
-                else state.statusText,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                fontSize = 12.sp, fontWeight = FontWeight.Medium, color = textColor,
-                textAlign = TextAlign.Center, fontFamily = FontFamily.Monospace
+                text = if (state.isRunning && state.lastSpeakTime.isNotEmpty()) "上次播报 ${state.lastSpeakTime}"
+                       else state.statusText,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textColor, textAlign = TextAlign.Center
             )
         }
 
         if (state.isRunning && state.aiLog.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .border(0.5.dp, StockColors.cardBorder, RoundedCornerShape(2.dp))
-                    .background(StockColors.cardSurface, RoundedCornerShape(2.dp))
-                    .padding(10.dp)
-            ) {
-                Text(
-                    "AI LOG",
-                    fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    letterSpacing = 2.sp
-                )
-                Spacer(Modifier.height(5.dp))
-                Text(
-                    state.aiLog.takeLast(20).joinToString("\n"),
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    lineHeight = 14.sp
-                )
+            val bg = MaterialTheme.colorScheme.surfaceVariant
+            Surface(shape = RoundedCornerShape(10.dp), color = bg, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp)) {
+                    Text("AI 日志", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(4.dp))
+                    Text(state.aiLog.takeLast(20).joinToString("\n"), fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp)
+                }
             }
         }
     }

@@ -323,12 +323,14 @@ class TtsEngine(
             val ref = referer ?: if (url.contains("baidu")) "https://www.baidu.com/" else "http://www.youdao.com/"
             val response = httpClient.newCall(Request.Builder().url(url)
                 .header("User-Agent", "Mozilla/5.0").header("Referer", ref).build()).execute()
-            if (!response.isSuccessful) { response.close(); onResult(false); return }
-            val body = response.body ?: run { onResult(false); return }
-            val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
-            body.byteStream().use { i -> FileOutputStream(mp3File).use { o -> i.copyTo(o) } }
-            if (mp3File.length() < 200) { mp3File.delete(); onResult(false); return }
-            handler.post { playAudio(mp3File) }; onResult(true)
+            response.use { resp ->
+                if (!resp.isSuccessful) { onResult(false); return }
+                val body = resp.body ?: run { onResult(false); return }
+                val mp3File = File(cacheDir, "speak_${System.currentTimeMillis()}.mp3")
+                body.byteStream().use { i -> FileOutputStream(mp3File).use { o -> i.copyTo(o) } }
+                if (mp3File.length() < 200) { mp3File.delete(); onResult(false); return }
+                handler.post { playAudio(mp3File) }; onResult(true)
+            }
         } catch (_: Exception) { onResult(false) }
     }
 

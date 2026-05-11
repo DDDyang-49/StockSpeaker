@@ -106,7 +106,7 @@ class StockMonitorService : Service() {
             val c = cm.load()
             AiConfig(enabled = c.aiTwoEnabled, apiKey = c.aiTwoApiKey, apiUrl = c.aiTwoApiUrl, model = c.aiTwoModel, thinkingModel = c.aiTwoThinkingModel)
         })
-        ttsEngine = TtsEngine(this, cacheDir) {}
+        ttsEngine = TtsEngine(this, cacheDir) { msg -> aiLog(msg) }
         ttsEngine.init()
         wakeLock = try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -403,7 +403,7 @@ class StockMonitorService : Service() {
                             uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
                             maybeGenerateAiSummary(data, speed)
                         }
-                    }
+                    } ?: run { intervalLargeEvents.clear() }
                 }
             } else if (config.aiEnabled && pendingAiSummary == null && !aiRequestInFlight && postAlertPhase == 0) {
                 // 轨道3：双AI / 长间隔AI插播
@@ -567,8 +567,16 @@ class StockMonitorService : Service() {
         val style = priceStyleIndex % 3
         priceStyleIndex++
         return when (style) {
-            0 -> buildString { append("${intPart}块"); if (jiao > 0) append(jiao); if (fen > 0) append("毛$fen") }
-            1 -> buildString { append("${intPart}点"); if (jiao > 0) append(jiao); if (fen > 0) append(fen) }
+            0 -> buildString {
+                append("${intPart}块")
+                if (jiao > 0) { append(jiao); if (fen > 0) append("毛$fen") }
+                else if (fen > 0) append("零$fen")
+            }
+            1 -> buildString {
+                append("${intPart}点")
+                if (jiao > 0) { append(jiao); if (fen > 0) append(fen) }
+                else if (fen > 0) append("零$fen")
+            }
             else -> if (jiao > 0 || fen > 0) "${intPart}.${jiao}${fen}元" else "${intPart}元"
         }
     }

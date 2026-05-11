@@ -97,15 +97,17 @@ object StockFetcher {
             val url = "https://smartbox.gtimg.cn/s3/?q=${java.net.URLEncoder.encode(keyword, "UTF-8")}&t=all"
             val request = Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return null
-            // 格式: ..."1^股票名~代码~市场代码~..."
-            val match = Regex("~(\\d{6})~").find(body)
-            if (match != null) {
-                val code = match.groupValues[1]
-                // 提取名称
-                val nameMatch = Regex("\\^(.*?)~$code").find(body)
-                val name = nameMatch?.groupValues?.get(1) ?: code
-                return Pair(code, name)
+            response.use { resp ->
+                val body = resp.body?.string() ?: return null
+                // 格式: ..."1^股票名~代码~市场代码~..."
+                val match = Regex("~(\\d{6})~").find(body)
+                if (match != null) {
+                    val code = match.groupValues[1]
+                    // 提取名称
+                    val nameMatch = Regex("\\^(.*?)~$code").find(body)
+                    val name = nameMatch?.groupValues?.get(1) ?: code
+                    return Pair(code, name)
+                }
             }
         } catch (_: Exception) {}
         return null
@@ -124,8 +126,10 @@ object StockFetcher {
             val url = "https://qt.gtimg.cn/q=${getMarketPrefix(code)}"
             val request = Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return null
-            return parse(body, threshold)
+            response.use { resp ->
+                val body = resp.body?.string() ?: return null
+                return parse(body, threshold)
+            }
         } catch (e: Exception) {
             return null
         }
@@ -172,25 +176,27 @@ object StockFetcher {
             val url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=$prefix,day,,,$count,qfq"
             val request = Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return ""
-            val json = body.substringAfter("kline_dayqfq=").trim()
-            val dayPattern = Regex("\"qfqday\":\\[(.*?)\\]")
-            val match = dayPattern.find(json) ?: return ""
-            val entries = match.groupValues[1].split("],[").takeLast(count)
-            val lines = mutableListOf<String>()
-            for (entry in entries) {
-                val parts = entry.trim('"', '[', ']').split(",").map { it.trim('"') }
-                if (parts.size >= 5) {
-                    val date = parts[0].takeLast(5)
-                    val open = parts[1].toDoubleOrNull() ?: continue
-                    val close = parts[4].toDoubleOrNull() ?: continue
-                    val high = parts[3].toDoubleOrNull() ?: 0.0
-                    val low = parts[2].toDoubleOrNull() ?: 0.0
-                    val chg = ((close - open) / open * 100).let { if (it >= 0) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}" }
-                    lines.add("$date O${"%.2f".format(open)} H${"%.2f".format(high)} L${"%.2f".format(low)} C${"%.2f".format(close)}($chg%)")
+            response.use { resp ->
+                val body = resp.body?.string() ?: return ""
+                val json = body.substringAfter("kline_dayqfq=").trim()
+                val dayPattern = Regex("\"qfqday\":\\[(.*?)\\]")
+                val match = dayPattern.find(json) ?: return ""
+                val entries = match.groupValues[1].split("],[").takeLast(count)
+                val lines = mutableListOf<String>()
+                for (entry in entries) {
+                    val parts = entry.trim('"', '[', ']').split(",").map { it.trim('"') }
+                    if (parts.size >= 5) {
+                        val date = parts[0].takeLast(5)
+                        val open = parts[1].toDoubleOrNull() ?: continue
+                        val close = parts[4].toDoubleOrNull() ?: continue
+                        val high = parts[3].toDoubleOrNull() ?: 0.0
+                        val low = parts[2].toDoubleOrNull() ?: 0.0
+                        val chg = ((close - open) / open * 100).let { if (it >= 0) "+${"%.1f".format(it)}" else "${"%.1f".format(it)}" }
+                        lines.add("$date O${"%.2f".format(open)} H${"%.2f".format(high)} L${"%.2f".format(low)} C${"%.2f".format(close)}($chg%)")
+                    }
                 }
+                return lines.joinToString("；")
             }
-            return lines.joinToString("；")
         } catch (_: Exception) { return "" }
     }
 
@@ -200,14 +206,16 @@ object StockFetcher {
             val url = "https://qt.gtimg.cn/q=sh000001"
             val request = Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: return ""
-            val line = body.split(";").firstOrNull { "=" in it } ?: return ""
-            val arr = line.substringAfter("=").trim('"').split("~")
-            if (arr.size < 50) return ""
-            val price = arr[3].toDoubleOrNull() ?: return ""
-            val pct = arr[32].toDoubleOrNull() ?: 0.0
-            val dir = if (pct > 0) "+" else ""
-            return "上证${price}(${dir}${"%.2f".format(pct)}%)"
+            response.use { resp ->
+                val body = resp.body?.string() ?: return ""
+                val line = body.split(";").firstOrNull { "=" in it } ?: return ""
+                val arr = line.substringAfter("=").trim('"').split("~")
+                if (arr.size < 50) return ""
+                val price = arr[3].toDoubleOrNull() ?: return ""
+                val pct = arr[32].toDoubleOrNull() ?: 0.0
+                val dir = if (pct > 0) "+" else ""
+                return "上证${price}(${dir}${"%.2f".format(pct)}%)"
+            }
         } catch (_: Exception) { return "" }
     }
 }
