@@ -79,6 +79,7 @@ class StockMonitorService : Service() {
     private val aiLogs = mutableListOf<String>()
     private var lastShanghaiIndex = ""
     private var shanghaiFetchCount = 0
+    private var lastTtsCheckTime = 0L  // TTS 防卡死：上次检查时间
 
     private fun aiLog(msg: String) {
         val line = "[${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())}] $msg"
@@ -106,7 +107,9 @@ class StockMonitorService : Service() {
         ttsEngine.init()
         wakeLock = try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "StockSpeaker:monitor")
+            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "StockSpeaker:monitor").apply {
+                setReferenceCounted(false)
+            }
         } catch (_: Exception) { null }
     }
 
@@ -137,7 +140,7 @@ class StockMonitorService : Service() {
         }
         if (isRunning) return START_STICKY
         isRunning = true
-        try { wakeLock?.acquire(10 * 60 * 1000L) } catch (_: Exception) {}
+        try { wakeLock?.acquire() } catch (_: Exception) {}
         val cm = ConfigManager(this); config = cm.load()
         cm.setMonitoringActive(true)
         lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; lastPrice = 0.0; lastSpokenPrice = 0.0; intervalLargeEvents.clear()
@@ -145,7 +148,7 @@ class StockMonitorService : Service() {
         lastFillInTime = 0L; fillInCount = 0; lastDualAnalysisTime = 0L
         postAlertPhase = 0; normalDeferred = false; lastAlertText = ""
         lastPostAlertData = null; batchQueue.clear()
-        alertActive = false; alertSettleCount = 0
+        alertActive = false; alertSettleCount = 0; lastTtsCheckTime = 0L
         lastShanghaiIndex = ""; shanghaiFetchCount = 0
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
@@ -184,7 +187,7 @@ class StockMonitorService : Service() {
             }
             handler.post {
                 if (!isRunning) return@post
-                try { wakeLock?.let { if (!it.isHeld) it.acquire(10 * 60 * 1000L) } } catch (_: Exception) {}
+                // WakeLock 在 onStartCommand 中永久持有，此处不再重复 acquire
                 if (data != null) { processStockData(data); updateNotif(data) }
                 handler.postDelayed({ runLoop() }, 2000)
             }
@@ -208,6 +211,18 @@ class StockMonitorService : Service() {
             largeAsksSpeak = data.largeAsksSpeak, largeBidsSpeak = data.largeBidsSpeak, isRunning = true
         )
         if (isPaused) return
+
+        // ── TTS 防卡死：息屏后 isSpeaking 可能永远不回调 → 35秒强制重置 ──
+        if (ttsEngine.isSpeaking) {
+            if (lastTtsCheckTime == 0L) lastTtsCheckTime = now
+            else if (now - lastTtsCheckTime > 35000) {
+                ttsEngine.stop()
+                lastTtsCheckTime = 0L
+                aiLog("⚠ TTS 卡死，强制重置")
+            }
+        } else {
+            lastTtsCheckTime = 0L
+        }
 
         // ── 分批播报队列（低优先级，不阻塞主流程） ──
         if (!ttsEngine.isSpeaking && batchQueue.isNotEmpty()) {
@@ -357,7 +372,9 @@ class StockMonitorService : Service() {
                 if (boxSilent) {
                     ttsEngine.speak("横盘震荡")
                     lastSpeakTime = now; intervalLargeEvents.clear()
+                    normalBroadcastCount++
                     uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
+                    maybeGenerateAiSummary(data, speed)
                 } else {
                     buildSpeakText(data, currentHand, speed, dynThreshold)?.let { text ->
                         if (ttsEngine.speak(text)) {

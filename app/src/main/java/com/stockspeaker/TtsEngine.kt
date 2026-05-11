@@ -65,7 +65,7 @@ class TtsEngine(
         val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build())
                 .setOnAudioFocusChangeListener(focusChangeListener)
@@ -84,7 +84,7 @@ class TtsEngine(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build())
                 .setOnAudioFocusChangeListener(focusChangeListener)

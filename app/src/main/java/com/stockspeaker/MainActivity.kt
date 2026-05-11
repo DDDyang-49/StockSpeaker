@@ -168,22 +168,22 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
         topBar = {
             TopAppBar(
                 title = { Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("摸鱼听盘", fontWeight = FontWeight.Bold)
+                    Text("摸鱼听盘", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                     Spacer(Modifier.width(8.dp))
-                    Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)) {
-                            Box(Modifier.size(6.dp).clip(CircleShape).background(if (state.isRunning) Color(0xFF34D399) else Color(0xFF6B7280)))
-                            Spacer(Modifier.width(5.dp))
-                            Text("v$versionName", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Surface(shape = RoundedCornerShape(2.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)) {
+                            Box(Modifier.size(5.dp).clip(CircleShape).background(if (state.isRunning) StockColors.runningGreen else Color(0xFF666666)))
+                            Spacer(Modifier.width(4.dp))
+                            Text("v$versionName", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontFamily = FontFamily.Monospace)
                         }
                     }
                 }},
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF000000))
             )
         },
         bottomBar = {
             NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
+                containerColor = Color(0xFF000000),
                 tonalElevation = 0.dp
             ) {
                 NavigationBarItem(
@@ -192,9 +192,11 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                     icon = { Icon(Icons.Filled.Home, "盯盘") },
                     label = { Text("盯盘") },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = MaterialTheme.colorScheme.primary,
-                        selectedTextColor = MaterialTheme.colorScheme.primary,
-                        indicatorColor = MaterialTheme.colorScheme.primaryContainer
+                        selectedIconColor = Color.White,
+                        selectedTextColor = Color.White,
+                        indicatorColor = StockColors.cardSurface,
+                        unselectedIconColor = Color(0xFF666666),
+                        unselectedTextColor = Color(0xFF666666)
                     )
                 )
                 NavigationBarItem(
@@ -203,14 +205,16 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                     icon = { Icon(Icons.Filled.Settings, "设置") },
                     label = { Text("设置") },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = MaterialTheme.colorScheme.primary,
-                        selectedTextColor = MaterialTheme.colorScheme.primary,
-                        indicatorColor = MaterialTheme.colorScheme.primaryContainer
+                        selectedIconColor = Color.White,
+                        selectedTextColor = Color.White,
+                        indicatorColor = StockColors.cardSurface,
+                        unselectedIconColor = Color(0xFF666666),
+                        unselectedTextColor = Color(0xFF666666)
                     )
                 )
             }
         },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = Color(0xFF000000)
     ) { pad ->
         when (selectedTab) {
             0 -> MonitorTab(pad, state, enabled, ctx, code, { buildConfig() }, configManager)
@@ -254,16 +258,26 @@ private fun MonitorTab(
             if (state.isRunning && state.stockName.isNotEmpty()) {
                 PriceCard(state)
             } else {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                    modifier = Modifier.fillMaxWidth().height(200.dp)
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(180.dp)
+                        .border(0.5.dp, StockColors.cardBorder, RoundedCornerShape(2.dp))
+                        .background(StockColors.cardSurface, RoundedCornerShape(2.dp)),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                        Text("📈", fontSize = 48.sp)
-                        Spacer(Modifier.height(8.dp))
-                        Text("点击下方按钮开始盯盘", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    Text(
+                        "TICKER OFF",
+                        fontSize = 16.sp, fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                        letterSpacing = 4.sp
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "输入代码，点击下方按钮开始盯盘",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    )
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -274,7 +288,7 @@ private fun MonitorTab(
         // 按钮区（永远吸底）
         if (state.isRunning && state.statusText.contains("AI异动")) {
             Surface(
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(2.dp),
                 color = StockColors.priceUpBg,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
             ) {
@@ -312,15 +326,17 @@ private fun MonitorTab(
                     }
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(2.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (state.isRunning) Color(0xFF991B1B) else MaterialTheme.colorScheme.primary
+                containerColor = if (state.isRunning) StockColors.priceUp else Color.White,
+                contentColor = if (state.isRunning) Color.White else Color.Black
             )
         ) {
             Text(
                 if (state.isRunning) "停止盯盘" else "开始自动盯盘",
-                fontSize = 17.sp, fontWeight = FontWeight.SemiBold
+                fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
             )
         }
         Spacer(Modifier.height(8.dp))
@@ -454,7 +470,7 @@ private fun SettingsTab(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = aiEnabled, onCheckedChange = onAi, enabled = enabled,
-                        colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
+                        colors = SwitchDefaults.colors(checkedTrackColor = Color.White, checkedThumbColor = Color.Black))
                     Spacer(Modifier.width(8.dp))
                     Text("启用AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
@@ -508,7 +524,7 @@ private fun SettingsTab(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = aiTwoEnabled, onCheckedChange = onAiTwo, enabled = enabled,
-                        colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
+                        colors = SwitchDefaults.colors(checkedTrackColor = Color.White, checkedThumbColor = Color.Black))
                     Spacer(Modifier.width(8.dp))
                     Text("启用辅AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
@@ -525,21 +541,25 @@ private fun SettingsTab(
                 if (cfg.aiTwoApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiTwoApiKey, aiTwoKeyNote)
             },
             modifier = Modifier.fillMaxWidth().height(44.dp),
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(2.dp),
             enabled = enabled,
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+            colors = ButtonDefaults.buttonColors(
+                containerColor = StockColors.accentGold,
+                contentColor = Color.Black
+            )
         ) {
-            Text("保存配置", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text("保存配置", fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(12.dp))
 
         // ── AI 日志 ──
         if (state.isRunning && state.aiLog.isNotEmpty()) {
-            Section("AI 日志") {
+            Section("AI LOG") {
                 Text(
                     state.aiLog.takeLast(30).joinToString("\n"),
                     fontSize = 10.sp, fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    lineHeight = 14.sp
                 )
             }
             Spacer(Modifier.height(16.dp))
@@ -553,19 +573,20 @@ private fun SettingsTab(
 
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {
-    val bg = MaterialTheme.colorScheme.surface
-    val border = MaterialTheme.colorScheme.outlineVariant
-    Surface(shape = RoundedCornerShape(14.dp), color = bg,
-        border = null,
-        shadowElevation = 0.dp,
-        modifier = Modifier.fillMaxWidth().border(1.dp, border, RoundedCornerShape(14.dp))
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .border(0.5.dp, StockColors.cardBorder, RoundedCornerShape(2.dp))
+            .background(StockColors.cardSurface, RoundedCornerShape(2.dp))
+            .padding(14.dp)
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary, letterSpacing = 1.sp)
-            Spacer(Modifier.height(12.dp))
-            content()
-        }
+        Text(
+            title, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            letterSpacing = 2.sp
+        )
+        Spacer(Modifier.height(10.dp))
+        content()
     }
 }
 
@@ -579,15 +600,20 @@ private fun LabelField(
     OutlinedTextField(
         value = value, onValueChange = onValue, label = if (label.isNotEmpty()) {{ Text(label, fontSize = 13.sp) }} else null,
         enabled = enabled, modifier = modifier, singleLine = true,
-        shape = RoundedCornerShape(10.dp), suffix = suffix?.let {{ Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }},
+        shape = RoundedCornerShape(2.dp), suffix = suffix?.let {{ Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }},
         textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = textAlign),
         visualTransformation = if (isPassword) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
         trailingIcon = trailing,
         colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-            focusedLabelColor = MaterialTheme.colorScheme.primary,
-            cursorColor = MaterialTheme.colorScheme.primary
+            focusedBorderColor = Color.White,
+            unfocusedBorderColor = StockColors.cardBorder,
+            focusedLabelColor = Color(0xFF999999),
+            cursorColor = Color.White,
+            focusedTextColor = Color.White,
+            unfocusedTextColor = Color(0xFFCCCCCC),
+            unfocusedLabelColor = Color(0xFF666666),
+            disabledTextColor = Color(0xFF555555),
+            disabledBorderColor = Color(0xFF1A1A1A)
         )
     )
 }
@@ -596,7 +622,7 @@ private fun LabelField(
 private fun Cb(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
         Checkbox(checked = checked, onCheckedChange = onChange, enabled = enabled,
-            colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary, uncheckedColor = MaterialTheme.colorScheme.outline))
+            colors = CheckboxDefaults.colors(checkedColor = Color.White, uncheckedColor = Color(0xFF555555), checkmarkColor = Color.Black))
         Text(label, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
     }
 }
@@ -606,90 +632,147 @@ private fun TextButton(text: String, onClick: () -> Unit) {
     androidx.compose.material3.TextButton(onClick = onClick) { Text(text, fontSize = 12.sp) }
 }
 
-// ── 行情卡片 ──
+// ── 行情卡片 "Terminal Ticker" ──
 
 @Composable
 private fun PriceCard(state: ServiceUiState) {
     val isUp = state.changePct > 0
     val isDown = state.changePct < 0
     val priceColor = when { isUp -> StockColors.priceUp; isDown -> StockColors.priceDown; else -> StockColors.priceFlat }
+    val borderColor = when { isUp -> StockColors.priceUpBg; isDown -> StockColors.priceDownBg; else -> StockColors.cardBorder }
 
-    // 价格变化闪烁动画
     val flashBg by animateColorAsState(
         targetValue = when { isUp -> StockColors.priceUpBg; isDown -> StockColors.priceDownBg; else -> Color.Transparent },
-        animationSpec = tween(300)
+        animationSpec = tween(200)
     )
 
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .border(0.5.dp, borderColor, RoundedCornerShape(2.dp))
+            .background(StockColors.cardSurface, RoundedCornerShape(2.dp))
+            .background(flashBg, RoundedCornerShape(2.dp))
+            .padding(20.dp)
     ) {
-        Column(Modifier.padding(20.dp).background(flashBg, RoundedCornerShape(14.dp))) {
-            // 名称行
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(state.stockName, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                Spacer(Modifier.width(10.dp))
-                Surface(shape = RoundedCornerShape(6.dp),
-                    color = if (isUp) StockColors.priceUpBg else if (isDown) StockColors.priceDownBg else Color.Transparent
-                ) {
-                    Text(if (isUp) "涨${abs(state.changePct)}%" else if (isDown) "跌${abs(state.changePct)}%" else "平",
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                        fontSize = 14.sp, fontWeight = FontWeight.Bold, color = priceColor)
+        // 头部：名称 + 涨跌幅标签
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                state.stockName,
+                fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                letterSpacing = 1.sp
+            )
+            Spacer(Modifier.weight(1f))
+            Surface(
+                shape = RoundedCornerShape(2.dp),
+                color = when {
+                    isUp -> StockColors.priceUpBg
+                    isDown -> StockColors.priceDownBg
+                    else -> Color.Transparent
                 }
+            ) {
+                Text(
+                    when {
+                        isUp -> "▲ ${"%.2f".format(abs(state.changePct))}%"
+                        isDown -> "▼ ${"%.2f".format(abs(state.changePct))}%"
+                        else -> "─ 0.00%"
+                    },
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                    color = priceColor, fontFamily = FontFamily.Monospace
+                )
             }
-            Spacer(Modifier.height(14.dp))
+        }
 
-            // 价格
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text("¥", fontSize = 20.sp, fontWeight = FontWeight.Light, color = priceColor, modifier = Modifier.padding(bottom = 5.dp))
-                Text(state.price.toString(), fontSize = 38.sp, fontWeight = FontWeight.Bold, color = priceColor, fontFamily = FontFamily.Monospace)
-            }
+        Spacer(Modifier.height(10.dp))
 
-            if (abs(state.speed) > 0) {
-                Text("涨速 ${state.speed}%", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+        // 大号价格
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                "¥",
+                fontSize = 22.sp, fontWeight = FontWeight.Light,
+                color = priceColor.copy(alpha = 0.7f),
+                modifier = Modifier.padding(bottom = 6.dp)
+            )
+            Text(
+                "%.2f".format(state.price),
+                fontSize = 44.sp, fontWeight = FontWeight.Bold,
+                color = priceColor, fontFamily = FontFamily.Monospace,
+                letterSpacing = (-1).sp
+            )
+        }
 
-            Spacer(Modifier.height(14.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        // 涨速
+        if (abs(state.speed) > 0.01) {
+            val speedDir = if (state.speed > 0) "↑" else "↓"
+            Text(
+                "$speedDir 涨速 ${"%.2f".format(abs(state.speed))}%",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+        HorizontalDivider(color = StockColors.cardBorder, thickness = 0.5.dp)
+        Spacer(Modifier.height(12.dp))
+
+        // 数据网格
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            DataItem("成交额", state.amount)
+            DataItem("量比", "%.2f".format(state.volRatio))
+            DataItem("现手", formatHand(state.currentHand))
+        }
+
+        // 大单盘口
+        if (state.largeAsks.isNotEmpty() || state.largeBids.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))
-
-            // 数据行
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                DataItem("成交额", state.amount)
-                DataItem("量比", state.volRatio.toString())
-                DataItem("现手", state.currentHand.toString())
-            }
-
-            // 大单
-            if (state.largeAsks.isNotEmpty() || state.largeBids.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Spacer(Modifier.height(12.dp))
-                if (state.largeAsks.isNotEmpty()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("▼ ", fontSize = 12.sp, color = StockColors.priceDown, fontWeight = FontWeight.Bold)
-                        Text(state.largeAsks.joinToString("  "), fontSize = 13.sp, color = StockColors.priceDown)
-                    }
+            HorizontalDivider(color = StockColors.cardBorder, thickness = 0.5.dp)
+            Spacer(Modifier.height(10.dp))
+            if (state.largeAsks.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+                    Text("▼", fontSize = 11.sp, color = StockColors.priceDown, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        state.largeAsks.joinToString("  "),
+                        fontSize = 12.sp, color = StockColors.priceDown,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
-                if (state.largeBids.isNotEmpty()) {
-                    if (state.largeAsks.isNotEmpty()) Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("▲ ", fontSize = 12.sp, color = StockColors.priceUp, fontWeight = FontWeight.Bold)
-                        Text(state.largeBids.joinToString("  "), fontSize = 13.sp, color = StockColors.priceUp)
-                    }
+            }
+            if (state.largeBids.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+                    Text("▲", fontSize = 11.sp, color = StockColors.priceUp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        state.largeBids.joinToString("  "),
+                        fontSize = 12.sp, color = StockColors.priceUp,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
             }
         }
     }
 }
 
+private fun formatHand(hand: Int): String = when {
+    hand >= 10000 -> "${hand / 10000}万"
+    hand >= 1000 -> "${hand / 1000}k"
+    else -> hand.toString()
+}
+
 @Composable
 private fun DataItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-        Spacer(Modifier.height(2.dp))
-        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            value, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontFamily = FontFamily.Monospace
+        )
+        Spacer(Modifier.height(3.dp))
+        Text(
+            label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            letterSpacing = 1.sp
+        )
     }
 }
 
@@ -698,35 +781,48 @@ private fun DataItem(label: String, value: String) {
 @Composable
 private fun StatusSection(state: ServiceUiState) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        val bgColor = when {
-            state.statusText.contains("✗") || state.statusText.contains("⚠") -> StockColors.priceUpBg
-            state.isRunning -> Color(0xFF1A3A2A)
-            else -> Color(0xFF3A2A1A)
+        val (bgColor, textColor) = when {
+            state.statusText.contains("✗") || state.statusText.contains("⚠") ->
+                StockColors.priceUpBg to StockColors.priceUp
+            state.isRunning ->
+                StockColors.runningGreenBg to StockColors.runningGreen
+            else ->
+                StockColors.accentGoldBg to StockColors.accentGold
         }
-        val textColor = when {
-            state.statusText.contains("✗") || state.statusText.contains("⚠") -> StockColors.priceUp
-            state.isRunning -> Color(0xFF34D399)
-            else -> StockColors.accentGold
-        }
-        Surface(shape = RoundedCornerShape(20.dp), color = bgColor) {
+        Surface(shape = RoundedCornerShape(2.dp), color = bgColor) {
             Text(
-                text = if (state.isRunning && state.lastSpeakTime.isNotEmpty()) "上次播报 ${state.lastSpeakTime}"
-                       else state.statusText,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textColor, textAlign = TextAlign.Center
+                text = if (state.isRunning && state.lastSpeakTime.isNotEmpty())
+                    "◉ 上次播报 ${state.lastSpeakTime}"
+                else state.statusText,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                fontSize = 12.sp, fontWeight = FontWeight.Medium, color = textColor,
+                textAlign = TextAlign.Center, fontFamily = FontFamily.Monospace
             )
         }
 
         if (state.isRunning && state.aiLog.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
-            val bg = MaterialTheme.colorScheme.surfaceVariant
-            Surface(shape = RoundedCornerShape(10.dp), color = bg, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(10.dp)) {
-                    Text("AI 日志", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(4.dp))
-                    Text(state.aiLog.takeLast(20).joinToString("\n"), fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp)
-                }
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .border(0.5.dp, StockColors.cardBorder, RoundedCornerShape(2.dp))
+                    .background(StockColors.cardSurface, RoundedCornerShape(2.dp))
+                    .padding(10.dp)
+            ) {
+                Text(
+                    "AI LOG",
+                    fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    letterSpacing = 2.sp
+                )
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    state.aiLog.takeLast(20).joinToString("\n"),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    lineHeight = 14.sp
+                )
             }
         }
     }
