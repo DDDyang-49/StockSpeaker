@@ -77,7 +77,11 @@ class AIAnalyzer(
     // ── 固定人设（统一，不随机） ──
     private val FIXED_PERSONA = "你是一个拥有20年A股游资经验的无情机器。只根据提供的盘面最新数据，用2句话给出诊断。" +
         "第一句话必须明确：【看多】、【看空】或【多空焦灼】。" +
-        "第二句话说明最核心的数据理由。拒绝废话，拒绝风险提示。"
+        "第二句话说明最核心的数据理由。拒绝废话，拒绝风险提示。" +
+        "【铁律】你必须将该股的实时走势与当前全市场情绪进行对比！" +
+        "如果大盘情绪高潮但该股滞涨，必须判定为弱势跟风/掉队被抛弃；" +
+        "如果大盘冰点该股却放量拉升，必须判定为资金抱团或新周期试错。" +
+        "必须在回答中体现大局观，指出高低位切换或主线扩散的迹象。"
 
     // ── 消息面池（30+条，按时间+股票代码混合选择，保证多变） ──
 
@@ -247,11 +251,12 @@ class AIAnalyzer(
     fun getCachedDualAnalysis(): String? = cachedDualAnalysis
     fun clearCachedDualAnalysis() { cachedDualAnalysis = null }
 
-    /** 双AI并行分析 + 预生成缓存 */
+    /** 双AI并行分析 + 预生成缓存（含全市场情绪注入） */
     fun generateDualAnalysis(
         snapshots: List<MarketSnapshot>,
         dailyHistory: String = "",
         shanghaiIndex: String = "",
+        globalSentiment: GlobalSentiment = GlobalSentiment(),
         callback: (String?) -> Unit
     ) {
         val configA = aiConfigProvider()
@@ -267,7 +272,7 @@ class AIAnalyzer(
             // AI-A：技术面（思考模式，深度推理）
             dualExecutor.execute {
                 try {
-                    val r = callAiForStance(configA, buildTechPrompt(snapshots, dailyHistory, shanghaiIndex), useThinking = true)
+                    val r = callAiForStance(configA, buildTechPrompt(snapshots, dailyHistory, shanghaiIndex, globalSentiment), useThinking = true)
                     resultA = r
                     onLog("双AI-A: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                 } catch (_: Exception) { onLog("双AI-A: 异常") }
@@ -278,7 +283,7 @@ class AIAnalyzer(
             if (useB) {
                 dualExecutor.execute {
                     try {
-                        val r = callAiForStance(configB, buildFundPrompt(snapshots, dailyHistory, shanghaiIndex), useThinking = false)
+                        val r = callAiForStance(configB, buildFundPrompt(snapshots, dailyHistory, shanghaiIndex, globalSentiment), useThinking = false)
                         resultB = r
                         onLog("双AI-B: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                     } catch (_: Exception) { onLog("双AI-B: 异常") }
@@ -300,10 +305,12 @@ class AIAnalyzer(
 
     // ── 构建提示词 ──
 
-    private fun buildTechPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = ""): String {
+    private fun buildTechPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment()): String {
         val latest = snapshots.last()
         val trend = describeTrend(snapshots)
         return buildString {
+            val slice = sentiment.toSentimentSlice()
+            if (slice.isNotBlank()) append("$slice ")
             append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
             append("成交${latest.amountStr}，近30秒${trend}。")
             append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
@@ -314,11 +321,13 @@ class AIAnalyzer(
         }
     }
 
-    private fun buildFundPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = ""): String {
+    private fun buildFundPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment()): String {
         val latest = snapshots.last()
         val trend = describeTrend(snapshots)
         val fundDir = if (latest.changePct > 0) "偏流入" else if (latest.changePct < 0) "偏流出" else "平衡"
         return buildString {
+            val slice = sentiment.toSentimentSlice()
+            if (slice.isNotBlank()) append("$slice ")
             append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
             append("成交${latest.amountStr}，资金${fundDir}，近30秒${trend}。")
             append("卖盘${latest.largeAsksCount}单对买盘${latest.largeBidsCount}单。")
@@ -484,8 +493,8 @@ class AIAnalyzer(
         return patterns[Random.nextInt(patterns.size)]
     }
 
-    // ── 构建深度分析提示词（含大盘锚定+AI记忆） ──
-    private fun buildPrompt(context: MarketContext = MarketContext(), alertContext: String = "", shanghaiIndex: String = ""): String {
+    // ── 构建深度分析提示词（含大盘锚定+AI记忆+全市场情绪） ──
+    private fun buildPrompt(context: MarketContext = MarketContext(), alertContext: String = "", shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment()): String {
         if (recentData.isEmpty()) return ""
         val latest = recentData.last()
         val history = recentData.toList()
@@ -550,6 +559,9 @@ class AIAnalyzer(
         val changeStr = if (latest.changePct > 0) "+${latest.changePct}%" else "${latest.changePct}%"
 
         return buildString {
+            // 全局情绪切片放在最开头，赋予 AI 上帝视角
+            val slice = sentiment.toSentimentSlice()
+            if (slice.isNotBlank()) append("$slice ")
             append("${latest.price}元，$changeStr，近30秒${trend}。")
             append("量比${latest.volRatio}（${volDesc}），成交${latest.amountStr}。")
             append("量价关系：${volPriceRel}。")
@@ -568,7 +580,7 @@ class AIAnalyzer(
     }
 
     /** 异动后的专用深度分析提示词 */
-    fun buildPostAlertPrompt(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = ""): String {
+    fun buildPostAlertPrompt(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment()): String {
         if (snapshots.isEmpty()) return ""
         val latest = snapshots.last()
         val trend = if (snapshots.size >= 2) {
@@ -577,6 +589,8 @@ class AIAnalyzer(
         } else "波动"
 
         return buildString {
+            val slice = sentiment.toSentimentSlice()
+            if (slice.isNotBlank()) append("$slice ")
             append("刚发生异动：${alertText.take(60)}。")
             append("异动后当前${latest.price}元，${trend}中。")
             append("量比${latest.volRatio}，成交${latest.amountStr}。")
@@ -641,15 +655,15 @@ class AIAnalyzer(
         }
     }
 
-    /** 深度分析：综合技术面+盘口博弈+K线+大盘，AI自主判断关键信号 */
-    fun generateSummary(context: MarketContext = MarketContext(), shanghaiIndex: String = "", callback: (String?) -> Unit) {
+    /** 深度分析：综合技术面+盘口博弈+K线+大盘+全市场情绪，AI自主判断关键信号 */
+    fun generateSummary(context: MarketContext = MarketContext(), shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), callback: (String?) -> Unit) {
         val config = aiConfigProvider()
         if (!config.enabled || config.apiKey.isBlank()) {
             callback(null)
             return
         }
 
-        val prompt = buildPrompt(context, shanghaiIndex = shanghaiIndex)
+        val prompt = buildPrompt(context, shanghaiIndex = shanghaiIndex, sentiment = sentiment)
         if (prompt.isEmpty()) {
             callback(null)
             return
@@ -699,15 +713,15 @@ class AIAnalyzer(
         }
     }
 
-    /** 异动后专用AI分析（独立prompt，强调异动背景） */
-    fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", callback: (String?) -> Unit) {
+    /** 异动后专用AI分析（独立prompt，强调异动背景+全市场情绪） */
+    fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), callback: (String?) -> Unit) {
         val config = aiConfigProvider()
         if (!config.enabled || config.apiKey.isBlank()) {
             callback(null)
             return
         }
 
-        val prompt = buildPostAlertPrompt(alertText, snapshots, shanghaiIndex)
+        val prompt = buildPostAlertPrompt(alertText, snapshots, shanghaiIndex, sentiment)
         if (prompt.isEmpty()) { callback(null); return }
 
         val postAlertPrompt = buildString {

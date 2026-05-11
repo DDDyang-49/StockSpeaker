@@ -50,27 +50,39 @@ class TtsEngine(
     private var engineScanIndex = -1
 
     // ── 音频焦点（播报时自动降低其他音量，播完复原） ──
+    // 播报是短时金融信息，切歌/通知等不应打断 → 失去焦点时重新请求 MAY_DUCK 共存
 
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS -> { stop(); abandonAudioFocus() }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> stop()
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {} // 我们请求MAY_DUCK，这是预期行为
-            AudioManager.AUDIOFOCUS_GAIN -> {} // 焦点恢复，不做额外处理
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                // 其他app抢占焦点（如切歌）→ 不停止播报，重新请求MAY_DUCK共存
+                hasAudioFocus = false
+                if (isSpeaking) requestAudioFocus()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                // 短暂失焦（通知音等）→ 忽略，继续播报
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // 系统让我们降音共存 → 预期行为，继续播报
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {}
         }
     }
+
+    @Volatile private var audioFocusRequest: AudioFocusRequest? = null
 
     private fun requestAudioFocus(): Boolean {
         if (hasAudioFocus) return true
         val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            val fr = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build())
                 .setOnAudioFocusChangeListener(focusChangeListener)
                 .build()
-            audioManager.requestAudioFocus(focusRequest)
+            audioFocusRequest = fr
+            audioManager.requestAudioFocus(fr)
         } else {
             @Suppress("DEPRECATION")
             audioManager.requestAudioFocus(focusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
@@ -82,14 +94,7 @@ class TtsEngine(
     private fun abandonAudioFocus() {
         if (!hasAudioFocus) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-                .setAudioAttributes(AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build())
-                .setOnAudioFocusChangeListener(focusChangeListener)
-                .build()
-            audioManager.abandonAudioFocusRequest(focusRequest)
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
         } else {
             @Suppress("DEPRECATION")
             audioManager.abandonAudioFocus(focusChangeListener)

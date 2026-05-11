@@ -76,10 +76,13 @@ class StockMonitorService : Service() {
     private val batchQueue = mutableListOf<String>()
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private val netExecutor = Executors.newSingleThreadExecutor()
+    private val sentimentExecutor = Executors.newSingleThreadExecutor()  // 情绪抓取独立线程，不阻塞行情轮询
     private val aiLogs = mutableListOf<String>()
     private var lastShanghaiIndex = ""
     private var shanghaiFetchCount = 0
     private var lastTtsCheckTime = 0L  // TTS 防卡死：上次检查时间
+    private var globalSentiment = GlobalSentiment()     // 全市场情绪缓存
+    private var lastSentimentFetchTime = 0L              // 上次情绪抓取时间
 
     private fun aiLog(msg: String) {
         val line = "[${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())}] $msg"
@@ -150,6 +153,7 @@ class StockMonitorService : Service() {
         lastPostAlertData = null; batchQueue.clear()
         alertActive = false; alertSettleCount = 0; lastTtsCheckTime = 0L
         lastShanghaiIndex = ""; shanghaiFetchCount = 0
+        globalSentiment = GlobalSentiment(); lastSentimentFetchTime = 0L
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
@@ -161,7 +165,8 @@ class StockMonitorService : Service() {
 
     override fun onDestroy() {
         isRunning = false; handler.removeCallbacksAndMessages(null)
-        ttsEngine.shutdown(); aiAnalyzer.shutdown(); netExecutor.shutdownNow()
+        ttsEngine.shutdown(); aiAnalyzer.shutdown()
+        netExecutor.shutdownNow(); sentimentExecutor.shutdownNow()
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
         val wasActive = ConfigManager(this).load().monitoringActive
         if (wasActive) {
@@ -184,6 +189,20 @@ class StockMonitorService : Service() {
             shanghaiFetchCount++
             if (shanghaiFetchCount % 10 == 1) {
                 lastShanghaiIndex = StockFetcher.fetchShanghaiIndexText()
+            }
+            // 每5分钟拉一次全市场情绪（异步，不阻塞主轮询）
+            val sentimentNow = System.currentTimeMillis()
+            if (sentimentNow - lastSentimentFetchTime >= 300000) {
+                lastSentimentFetchTime = sentimentNow
+                sentimentExecutor.execute {
+                    try {
+                        val s = MarketSentimentFetcher.fetchAll()
+                        if (!s.isEmpty) {
+                            globalSentiment = s
+                            handler.post { aiLog("情绪: ${s.toSentimentSlice().take(60)}") }
+                        }
+                    } catch (_: Exception) {}
+                }
             }
             handler.post {
                 if (!isRunning) return@post
@@ -415,7 +434,7 @@ class StockMonitorService : Service() {
             fundFlowAmount = "${"%.1f".format(Math.abs(data.changePct) * 1.5)}亿",
             alertStats = ""
         )
-        aiAnalyzer.generateSummary(ctx, lastShanghaiIndex) { summary ->
+        aiAnalyzer.generateSummary(ctx, lastShanghaiIndex, globalSentiment) { summary ->
             aiRequestInFlight = false
             if (summary != null) handler.post {
                 aiLog("AI点评: ${summary.take(30)}...")
@@ -448,7 +467,7 @@ class StockMonitorService : Service() {
         aiRequestInFlight = true
         val snapshots = aiAnalyzer.getRecentSnapshots()
         val alertText = lastAlertText
-        aiAnalyzer.generatePostAlertAnalysis(alertText, snapshots, lastShanghaiIndex) { result ->
+        aiAnalyzer.generatePostAlertAnalysis(alertText, snapshots, lastShanghaiIndex, globalSentiment) { result ->
             aiRequestInFlight = false
             if (result != null) handler.post {
                 aiLog("异动复盘: ${result.take(30)}...")
@@ -471,7 +490,8 @@ class StockMonitorService : Service() {
             aiAnalyzer.generateDualAnalysis(
                 aiAnalyzer.getRecentSnapshots(),
                 dailyHistory = history,
-                shanghaiIndex = index
+                shanghaiIndex = index,
+                globalSentiment = globalSentiment
             ) { text ->
                 aiRequestInFlight = false
                 if (text != null) handler.post {
