@@ -100,15 +100,12 @@ object MarketSentimentFetcher {
             val body = resp.body?.string() ?: return Quadruple(0, 0, 0, 0)
             val json = JSONObject(body)
             val data = json.optJSONObject("data") ?: return Quadruple(0, 0, 0, 0)
-            val SENTINEL = 2147483647  // 东方财富脏数据标记值
-            var up = data.optInt("f47", 0)
-            var down = data.optInt("f48", 0)
-            var limitUp = data.optInt("f50", 0)
-            var limitDown = data.optInt("f51", 0)
-            if (up == SENTINEL) up = 0
-            if (down == SENTINEL) down = 0
-            if (limitUp == SENTINEL) limitUp = 0
-            if (limitDown == SENTINEL) limitDown = 0
+            // 常识边界防御：A股总数约5500只，任何>10000或<0的值都是脏数据
+            fun Int.sane(): Int = if (this in 0..10000) this else 0
+            val up = data.optInt("f47", 0).sane()
+            val down = data.optInt("f48", 0).sane()
+            val limitUp = data.optInt("f50", 0).sane()
+            val limitDown = data.optInt("f51", 0).sane()
             if (up == 0 && down == 0) return Quadruple(0, 0, 0, 0)
             return Quadruple(up, down, limitUp, limitDown)
         } catch (_: Exception) {
@@ -159,14 +156,18 @@ object MarketSentimentFetcher {
             val json = JSONObject(body)
             val data = json.optJSONObject("data")
             val diffs = data?.optJSONArray("diff") ?: return Pair("", 0)
-            val badWords = listOf("转债", "ST", "退", "N")
+            val badWords = listOf("转", "债", "ST", "退", "N", "C", "U", "W")
             for (i in 0 until diffs.length()) {
                 val item = diffs.optJSONObject(i) ?: continue
                 val name = item.optString("f14", "")
+                val code = item.optString("f12", "")
                 if (name.isBlank()) continue
+                // 过滤转债（11xxxx/12xxxx）和ST/退市/新股等
+                if (code.startsWith("11") || code.startsWith("12")) continue
                 if (badWords.any { it in name }) continue
                 val boards = item.optInt("f8", 0)
-                if (boards == 2147483647 || boards == 0) continue
+                // 常识校验：A股史上最高连板记录约30板
+                if (boards > 30 || boards <= 0) continue
                 return Pair(name, boards)
             }
             return Pair("", 0)

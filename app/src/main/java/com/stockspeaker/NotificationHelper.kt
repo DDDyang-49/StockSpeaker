@@ -9,23 +9,41 @@ import androidx.core.app.NotificationCompat
 
 object NotificationHelper {
     const val CHANNEL_ID = "stock_monitor"
-    const val ALERT_CHANNEL_ID = "stock_alert"
+    // const val ALERT_CHANNEL_ID = "stock_alert"  // v1.1.0+ 暂禁用异动通知
     const val NOTIFICATION_ID = 1
-    const val ALERT_NOTIFICATION_ID = 2
-    const val ACTION_PAUSE = "com.stockspeaker.PAUSE"
-    const val ACTION_RESUME = "com.stockspeaker.RESUME"
-    const val ACTION_DISMISS_ALERT = "com.stockspeaker.DISMISS_ALERT"
-    const val ACTION_DISMISS_ALERT_OPEN = "com.stockspeaker.DISMISS_ALERT_OPEN"
+    // const val ALERT_NOTIFICATION_ID = 2
+    // const val ACTION_PAUSE = "com.stockspeaker.PAUSE"
+    // const val ACTION_RESUME = "com.stockspeaker.RESUME"
+    // const val ACTION_DISMISS_ALERT = "com.stockspeaker.DISMISS_ALERT"
+    // const val ACTION_DISMISS_ALERT_OPEN = "com.stockspeaker.DISMISS_ALERT_OPEN"
 
     fun createChannel(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(NotificationChannel(
-            CHANNEL_ID, "盯盘服务", NotificationManager.IMPORTANCE_DEFAULT
-        ).apply { description = "摸鱼听盘后台播报通知" })
-        nm.createNotificationChannel(NotificationChannel(
-            ALERT_CHANNEL_ID, "异动提醒", NotificationManager.IMPORTANCE_HIGH
-        ).apply { description = "大单/涨速异动实时提醒" })
+            CHANNEL_ID, "盯盘服务", NotificationManager.IMPORTANCE_LOW
+        ).apply { description = "后台监控运行中" })
+        // v1.1.0+ 暂禁用异动通知频道
+        // nm.createNotificationChannel(NotificationChannel(
+        //     ALERT_CHANNEL_ID, "异动提醒", NotificationManager.IMPORTANCE_HIGH
+        // ).apply { description = "大单/涨速异动实时提醒" })
     }
+
+    /** 最小化前台通知（Android 强制要求，无操作按钮） */
+    fun buildMinimal(context: Context) = NotificationCompat.Builder(context, CHANNEL_ID)
+        .setSmallIcon(R.drawable.ic_notification)
+        .setContentTitle("摸鱼听盘")
+        .setContentText("后台监控运行中")
+        .setOngoing(true)
+        .setContentIntent(PendingIntent.getActivity(
+            context, 0, Intent(context, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        ))
+        .build()
+
+    /*
+    // ═══════════════════════════════════════
+    // v1.1.0+ 以下通知功能暂禁用，代码保留备用
+    // ═══════════════════════════════════════
 
     private fun baseBuilder(context: Context) = NotificationCompat.Builder(context, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_notification)
@@ -72,7 +90,6 @@ object NotificationHelper {
             .notify(NOTIFICATION_ID, builder.build())
     }
 
-    /** 异动提醒通知：点击通知主体关闭异动并打开App，"关闭提醒"按钮仅关闭异动 */
     fun buildAlert(context: Context, text: String): NotificationCompat.Builder {
         val dismissIntent = PendingIntent.getService(context, 3,
             Intent(context, StockMonitorService::class.java).setAction(ACTION_DISMISS_ALERT),
@@ -102,4 +119,5 @@ object NotificationHelper {
         (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
             .cancel(ALERT_NOTIFICATION_ID)
     }
+    */
 }

@@ -83,9 +83,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         configManager = ConfigManager(this)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        // v1.1.0+ 通知功能暂禁用
+        // if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        //     ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        // ) requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
 
         // 如果之前正在盯盘（被系统杀掉后返回），自动恢复
         if (configManager.load().monitoringActive) {
@@ -293,20 +294,6 @@ private fun MonitorTab(
         }
 
         // 按钮区（永远吸底）
-        if (state.isRunning && state.statusText.contains("AI异动")) {
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = StockColors.priceUpBg,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
-            ) {
-                Text(
-                    "点击通知栏「关闭提醒」可退出异动播报",
-                    modifier = Modifier.padding(10.dp),
-                    fontSize = 12.sp, color = StockColors.priceUp, textAlign = TextAlign.Center
-                )
-            }
-        }
-
         Button(
             onClick = {
                 if (state.isRunning) StockMonitorService.stop(ctx)
@@ -427,7 +414,7 @@ private fun SettingsTab(
                 LabelField("播报间隔", value = interval, onValue = onInterval, enabled = enabled, Modifier.weight(1f), suffix = "秒")
             }
             Spacer(Modifier.height(10.dp))
-            LabelField("所属题材（选填，用于AI精准分析）", value = stockSector, onValue = onStockSector, enabled = enabled, modifier = Modifier.fillMaxWidth())
+            LabelField("所属题材（选填）", value = stockSector, onValue = onStockSector, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             LabelField("大单阈值", value = threshold, onValue = onThreshold, enabled = enabled, modifier = Modifier.fillMaxWidth(), suffix = "手")
         }
@@ -444,7 +431,7 @@ private fun SettingsTab(
         Spacer(Modifier.height(12.dp))
 
         // ── AI 辅助 ──
-        Section("AI 辅助盘面分析") {
+        Section("AI 辅助分析") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AI_PROVIDERS.forEach { p ->
                     FilterChip(
@@ -456,7 +443,7 @@ private fun SettingsTab(
                 }
             }
             Spacer(Modifier.height(10.dp))
-            LabelField("模型名称（留空则用默认）", value = aiModel, onValue = onAiModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
+            LabelField("模型名称", value = aiModel, onValue = onAiModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             // API Key + 历史下拉
             Box(Modifier.fillMaxWidth()) {
@@ -481,7 +468,7 @@ private fun SettingsTab(
                 }
             }
             Spacer(Modifier.height(6.dp))
-            LabelField("备注（记录模型/用途）", value = aiKeyNote, onValue = onAiKeyNote, enabled = enabled, modifier = Modifier.fillMaxWidth())
+            LabelField("备注", value = aiKeyNote, onValue = onAiKeyNote, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -500,7 +487,7 @@ private fun SettingsTab(
         Spacer(Modifier.height(12.dp))
 
         // ── 辅 AI ──
-        Section("辅AI 资金面分析（混沌/长间隔时触发）") {
+        Section("辅AI · 资金面分析") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AI_PROVIDERS.forEach { p ->
                     FilterChip(
@@ -512,11 +499,11 @@ private fun SettingsTab(
                 }
             }
             Spacer(Modifier.height(10.dp))
-            LabelField("模型名称（留空则用默认）", value = aiTwoModel, onValue = onAiTwoModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
+            LabelField("模型名称", value = aiTwoModel, onValue = onAiTwoModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             // 辅AI Key + 历史下拉
             Box(Modifier.fillMaxWidth()) {
-                LabelField("API Key（留空则复用主AI）", value = aiTwoKey, onValue = onAiTwoKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
+                LabelField("API Key（留空复用主AI）", value = aiTwoKey, onValue = onAiTwoKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
                     isPassword = !showKey2, trailing = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (apiKeyHistory.isNotEmpty()) {
@@ -537,7 +524,7 @@ private fun SettingsTab(
                 }
             }
             Spacer(Modifier.height(6.dp))
-            LabelField("备注（记录模型/用途）", value = aiTwoKeyNote, onValue = onAiTwoKeyNote, enabled = enabled, modifier = Modifier.fillMaxWidth())
+            LabelField("备注", value = aiTwoKeyNote, onValue = onAiTwoKeyNote, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -550,9 +537,9 @@ private fun SettingsTab(
         }
         Spacer(Modifier.height(12.dp))
 
-        // ── 主力视角数据源（v1.1.0） ──
-        Section("主力视角 · 持仓防守增强") {
-            Text("以下数据为零鉴权免费API，开启后可大幅提升播报和AI分析的信息密度。北向资金已砍——A股盘中不再披露实时数据。",
+        // ── 数据源增强（v1.1.0） ──
+        Section("数据源增强") {
+            Text("开启后播报和AI分析包含更多维度信息",
                 fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -567,7 +554,7 @@ private fun SettingsTab(
             }
             Spacer(Modifier.height(10.dp))
             if (conceptAutoDetect) {
-                Text("开启「自动识别题材」后，上方的「所属题材」会被自动检测覆盖，无需手动填写。",
+                Text("开启后自动识别题材，无需手动填写",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.tertiary)
             }
         }

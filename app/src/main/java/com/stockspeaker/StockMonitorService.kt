@@ -96,9 +96,10 @@ class StockMonitorService : Service() {
     private var conceptBlockCache = ConceptBlockData()
     private var lastConceptFetchTime = 0L
     private var dragonTigerTag = ""  // 龙虎榜静态标签，仅启动时抓一次
-    private var lastNotifPrice = -1.0  // 通知栏变化检测
-    private var lastNotifPct = 0.0
-    private var lastNotifPaused = false
+    // v1.1.0+ 通知功能暂禁用
+    // private var lastNotifPrice = -1.0
+    // private var lastNotifPct = 0.0
+    // private var lastNotifPaused = false
     private var lastStockData: StockData? = null  // 缓存最近行情供双AI分析使用
     private var lastSpeed = 0.0
 
@@ -137,6 +138,8 @@ class StockMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // v1.1.0+ 通知操作按钮暂禁用
+        /*
         when (intent?.action) {
             NotificationHelper.ACTION_PAUSE -> { isPaused = true; ttsEngine.stop(); aiLog("⏸ 暂停"); updateNotif(); return START_STICKY }
             NotificationHelper.ACTION_RESUME -> { isPaused = false; aiLog("▶ 恢复"); updateNotif(); return START_STICKY }
@@ -149,6 +152,7 @@ class StockMonitorService : Service() {
                 return START_STICKY
             }
         }
+        */
         if (isRunning) return START_STICKY
         isRunning = true
         try { wakeLock?.acquire(10000) } catch (_: Exception) {}
@@ -167,7 +171,7 @@ class StockMonitorService : Service() {
         dragonTigerTag = ""
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         priceHistory.clear()
-        startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
+        startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.buildMinimal(this))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
         // 启动时异步抓取龙虎榜静态标签（SharedPreferences日期缓存，过期自动刷新）
         netExecutor.execute {
@@ -247,7 +251,7 @@ class StockMonitorService : Service() {
             }
             uiHandler.post {
                 if (!isRunning) return@post
-                if (data != null) { processStockData(data); updateNotif(data) }
+                if (data != null) { processStockData(data) /* updateNotif 暂禁用 */ }
                 // 防御性重申请 WakeLock（部分ROM息屏后偷偷释放，每次循环10秒超时）
                 try { wakeLock?.let { if (!it.isHeld) it.acquire(10000) } } catch (_: Exception) {}
                 // 用后台HandlerThread定时，不受Doze主线程挂起影响
@@ -342,8 +346,9 @@ class StockMonitorService : Service() {
             } catch (_: Exception) {}
         }
         if (alertSpoken) {
-            NotificationHelper.notifyAlert(this@StockMonitorService,
-                NotificationHelper.buildAlert(this@StockMonitorService, alertText))
+            // v1.1.0+ 异动通知暂禁用
+            // NotificationHelper.notifyAlert(this@StockMonitorService,
+            //     NotificationHelper.buildAlert(this@StockMonitorService, alertText))
             alertActive = true; alertSettleCount = 0
             postAlertPhase = 1; lastAlertText = alertText
             lastPostAlertData = data; normalDeferred = false
@@ -662,11 +667,13 @@ class StockMonitorService : Service() {
     }
 
     private fun dismissAlert() {
-        ttsEngine.stop(); NotificationHelper.cancelAlert(this)
+        ttsEngine.stop()
+        // v1.1.0+ 异动通知暂禁用
+        // NotificationHelper.cancelAlert(this)
         alertActive = false; alertSettleCount = 0; postAlertPhase = 0
         lastPostAlertData = null; batchQueue.clear()
         aiLog("🔕 关闭异动提醒")
-        updateNotif()
+        // updateNotif()
     }
 
     // ── 异动前缀（随机切换，确保异动播报有辨识度） ──
@@ -862,8 +869,9 @@ class StockMonitorService : Service() {
         return if (r == r.toLong().toDouble()) r.toLong().toString() else r.toString()
     }
 
+    // v1.1.0+ 通知栏实时更新暂禁用
+    /*
     private fun updateNotif(data: StockData? = null) {
-        // 变更检测：价格/涨跌幅/暂停状态未变则跳过通知栏刷新
         if (data != null && data.price == lastNotifPrice && data.changePct == lastNotifPct && isPaused == lastNotifPaused) return
         lastNotifPrice = data?.price ?: -1.0
         lastNotifPct = data?.changePct ?: 0.0
@@ -877,4 +885,5 @@ class StockMonitorService : Service() {
         }
         NotificationHelper.notify(this, builder)
     }
+    */
 }
