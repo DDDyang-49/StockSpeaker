@@ -503,22 +503,22 @@ class StockMonitorService : Service() {
 
         return MarketContext(
             stockSector = sector,
-            fundFlowDirection = fundFlowCache.directionLabel.takeIf { config.fundFlowEnabled },
-            fundFlowAmount = fundFlowCache.mainForceStr.takeIf { config.fundFlowEnabled },
-            fundFlowQuadrant = quadrant.takeIf { config.fundFlowEnabled && it.isNotBlank() },
-            blockInfo = conceptBlockCache.toContextSlice().trimEnd('。').takeIf { config.conceptAutoDetect },
-            relativeStrength = conceptBlockCache.relativeStrength(data.changePct).takeIf { config.conceptAutoDetect },
-            alphaDiff = alpha.takeIf { config.conceptAutoDetect && it.isNotBlank() },
+            fundFlowDirection = fundFlowCache.directionLabel.takeIf { config.fundFlowEnabled } ?: "",
+            fundFlowAmount = fundFlowCache.mainForceStr.takeIf { config.fundFlowEnabled } ?: "",
+            fundFlowQuadrant = quadrant.takeIf { config.fundFlowEnabled && it.isNotBlank() } ?: "",
+            blockInfo = conceptBlockCache.toContextSlice().trimEnd('。').takeIf { config.conceptAutoDetect } ?: "",
+            relativeStrength = conceptBlockCache.relativeStrength(data.changePct).takeIf { config.conceptAutoDetect } ?: "",
+            alphaDiff = alpha.takeIf { config.conceptAutoDetect && it.isNotBlank() } ?: "",
             sectorPct = sectorPct,
-            dragonTigerTag = dragonTigerTag.takeIf { config.dragonTigerEnabled && it.isNotBlank() },
-            mcapContext = data.mcapAssessment.takeIf { it.isNotBlank() },
+            dragonTigerTag = dragonTigerTag.takeIf { config.dragonTigerEnabled && it.isNotBlank() } ?: "",
+            mcapContext = data.mcapAssessment.takeIf { it.isNotBlank() } ?: "",
             limitDistance = buildString {
                 if (config.alertLimitDistance) {
                     if (data.limitUpDist > 0 && data.limitUpDist < 3.0) append("距涨停仅${"%.1f".format(data.limitUpDist)}%")
                     if (data.limitDownDist > 0 && data.limitDownDist < 3.0) append("距跌停仅${"%.1f".format(data.limitDownDist)}%")
                 }
-            }.takeIf { it.isNotBlank() },
-            newsHeadline = globalSentiment.toFlashNewsBlock().takeIf { it.isNotBlank() }?.take(80),
+            }.takeIf { it.isNotBlank() } ?: "",
+            newsHeadline = globalSentiment.toFlashNewsBlock().takeIf { it.isNotBlank() }?.take(80) ?: "",
             alertStats = ""
         )
     }

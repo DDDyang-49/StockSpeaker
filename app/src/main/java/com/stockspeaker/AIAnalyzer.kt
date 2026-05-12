@@ -383,7 +383,7 @@ class AIAnalyzer(
             if (dailyHistory.isNotBlank()) append("近5日K线：${dailyHistory}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
             if (context.blockInfo.isNotBlank()) append("板块：${context.blockInfo}。")
-            if (lastStance != null) append("你上次判断为${lastStance.bracketLabel}，请结合最新数据判断是否修正观点。")
+            val stance = lastStance; if (stance != null) append("你上次判断为${stance.bracketLabel}，请结合最新数据判断是否修正观点。")
             append("综合技术面、K线形态、盘口博弈、资金流向和大盘环境，给出持仓防守建议（四选一）。")
         }
     }
@@ -405,7 +405,7 @@ class AIAnalyzer(
             append("卖盘${latest.largeAsksCount}单对买盘${latest.largeBidsCount}单。")
             if (dailyHistory.isNotBlank()) append("近日K线：${dailyHistory}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            if (lastStance != null) append("你上次判断为${lastStance.bracketLabel}，请结合最新数据判断是否修正观点。")
+            val stance = lastStance; if (stance != null) append("你上次判断为${stance.bracketLabel}，请结合最新数据判断是否修正观点。")
             append("综合资金流向、主力意图、近日K线趋势和大盘环境，给出持仓防守建议。")
         }
     }
@@ -687,7 +687,7 @@ class AIAnalyzer(
             if (context.alertStats.isNotBlank()) append("近期异动：${context.alertStats}。")
             if (context.newsHeadline.isNotBlank()) append("消息面：${context.newsHeadline}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            if (lastStance != null) append("你上次判断为${lastStance.bracketLabel}，请结合最新数据判断是否修正观点。")
+            val stance = lastStance; if (stance != null) append("你上次判断为${stance.bracketLabel}，请结合最新数据判断是否修正观点。")
 
             append("从以上数据中挑最值得说的1-2个关键信号，用2-4句口语点评。")
             append("优先关注：四象限资金判定、Alpha差值方向、量价异常、涨跌停风险。")
@@ -720,7 +720,7 @@ class AIAnalyzer(
             append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
             if (context.blockInfo.isNotBlank()) append("板块：${context.blockInfo}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            if (lastStance != null) append("你上次判断为${lastStance.bracketLabel}，请结合最新数据判断是否修正观点。")
+            val stance = lastStance; if (stance != null) append("你上次判断为${stance.bracketLabel}，请结合最新数据判断是否修正观点。")
             append("结合资金方向和板块强弱，分析这波异动是什么意图？后续走势怎么看？")
             append("用2-3句口语点评，像老股民复盘异动，不超过60字。")
         }
