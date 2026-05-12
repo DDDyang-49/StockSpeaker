@@ -86,11 +86,24 @@ class StockMonitorService : Service() {
     private var lastShanghaiIndex = ""
     private var shanghaiFetchCount = 0
     private var lastTtsCheckTime = 0L  // TTS 防卡死：上次检查时间
+    private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    private val calendar = java.util.Calendar.getInstance()  // 复用，避免热路径每次new
     private var globalSentiment = GlobalSentiment()     // 全市场情绪缓存
     private var lastSentimentFetchTime = 0L              // 上次情绪抓取时间
+    // 新数据源缓存（v1.1.0 — 北向已砍，龙虎榜改为静态标签）
+    private var fundFlowCache = FundFlowData()
+    private var lastFundFlowFetchTime = 0L
+    private var conceptBlockCache = ConceptBlockData()
+    private var lastConceptFetchTime = 0L
+    private var dragonTigerTag = ""  // 龙虎榜静态标签，仅启动时抓一次
+    private var lastNotifPrice = -1.0  // 通知栏变化检测
+    private var lastNotifPct = 0.0
+    private var lastNotifPaused = false
+    private var lastStockData: StockData? = null  // 缓存最近行情供双AI分析使用
+    private var lastSpeed = 0.0
 
     private fun aiLog(msg: String) {
-        val line = "[${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())}] $msg"
+        val line = "[${timeFmt.format(Date())}] $msg"
         uiHandler.post {
             aiLogs.add(line)
             if (aiLogs.size > 100) aiLogs.removeAt(0)
@@ -127,24 +140,12 @@ class StockMonitorService : Service() {
         when (intent?.action) {
             NotificationHelper.ACTION_PAUSE -> { isPaused = true; ttsEngine.stop(); aiLog("⏸ 暂停"); updateNotif(); return START_STICKY }
             NotificationHelper.ACTION_RESUME -> { isPaused = false; aiLog("▶ 恢复"); updateNotif(); return START_STICKY }
-            NotificationHelper.ACTION_DISMISS_ALERT -> {
-                ttsEngine.stop(); NotificationHelper.cancelAlert(this)
-                alertActive = false; alertSettleCount = 0; postAlertPhase = 0
-                lastPostAlertData = null; batchQueue.clear()
-                aiLog("🔕 关闭异动提醒")
-                updateNotif(); return START_STICKY
-            }
+            NotificationHelper.ACTION_DISMISS_ALERT -> { dismissAlert(); return START_STICKY }
             NotificationHelper.ACTION_DISMISS_ALERT_OPEN -> {
-                ttsEngine.stop(); NotificationHelper.cancelAlert(this)
-                alertActive = false; alertSettleCount = 0; postAlertPhase = 0
-                lastPostAlertData = null; batchQueue.clear()
-                aiLog("🔕 关闭异动提醒")
-                updateNotif()
-                // 同时打开App
-                val openIntent = Intent(this, MainActivity::class.java).apply {
+                dismissAlert()
+                startActivity(Intent(this, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                }
-                startActivity(openIntent)
+                })
                 return START_STICKY
             }
         }
@@ -161,10 +162,20 @@ class StockMonitorService : Service() {
         alertActive = false; alertSettleCount = 0; lastTtsCheckTime = 0L
         lastShanghaiIndex = ""; shanghaiFetchCount = 0
         globalSentiment = GlobalSentiment(); lastSentimentFetchTime = 0L
+        fundFlowCache = FundFlowData(); lastFundFlowFetchTime = 0L
+        conceptBlockCache = ConceptBlockData(); lastConceptFetchTime = 0L
+        dragonTigerTag = ""
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         priceHistory.clear()
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
+        // 启动时异步抓取龙虎榜静态标签（SharedPreferences日期缓存，过期自动刷新）
+        netExecutor.execute {
+            try {
+                dragonTigerTag = DragonTigerFetcher.fetchDailyTag(config.stockCode, this@StockMonitorService)
+                if (dragonTigerTag.isNotBlank()) aiLog("龙虎榜: $dragonTigerTag")
+            } catch (_: Exception) {}
+        }
         runLoop()
         return START_STICKY
     }
@@ -213,6 +224,27 @@ class StockMonitorService : Service() {
                     } catch (_: Exception) {}
                 }
             }
+            // ── v1.1.0: 新数据源拉取 ──
+            // 资金流向（每30秒）
+            if (sentimentNow - lastFundFlowFetchTime >= 30000) {
+                lastFundFlowFetchTime = sentimentNow
+                sentimentExecutor.execute {
+                    try {
+                        val ff = FundFlowFetcher.fetch(config.stockCode)
+                        if (!ff.isEmpty) fundFlowCache = ff
+                    } catch (_: Exception) {}
+                }
+            }
+            // 概念板块（第一次+每5分钟）
+            if (lastConceptFetchTime == 0L || sentimentNow - lastConceptFetchTime >= 300000) {
+                lastConceptFetchTime = sentimentNow
+                sentimentExecutor.execute {
+                    try {
+                        val cb = ConceptBlockFetcher.fetch(config.stockCode)
+                        if (!cb.isEmpty) conceptBlockCache = cb
+                    } catch (_: Exception) {}
+                }
+            }
             uiHandler.post {
                 if (!isRunning) return@post
                 if (data != null) { processStockData(data); updateNotif(data) }
@@ -234,17 +266,23 @@ class StockMonitorService : Service() {
         } else 0.0
         val prevPrice = lastPrice
         lastTotalVol = data.totalVol; lastChangePct = data.changePct; lastPrice = data.price
+        lastStockData = data; lastSpeed = speed
         val dynThreshold = getDynamicThreshold(data.turnover, data.volRatio)
         val now = System.currentTimeMillis()
         val nowStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(now))
         val absSpeed = Math.abs(speed)
 
-        uiState.value = uiState.value.copy(
-            stockName = data.name, price = data.price, changePct = data.changePct,
-            speed = speed, amount = data.amountStr, volRatio = data.volRatio,
-            currentHand = currentHand, largeAsks = data.largeAsks, largeBids = data.largeBids,
-            largeAsksSpeak = data.largeAsksSpeak, largeBidsSpeak = data.largeBidsSpeak, isRunning = true
-        )
+        val prev = uiState.value
+        if (prev.price != data.price || prev.changePct != data.changePct ||
+            prev.speed != speed || prev.currentHand != currentHand ||
+            prev.volRatio != data.volRatio || prev.stockName != data.name || !prev.isRunning) {
+            uiState.value = prev.copy(
+                stockName = data.name, price = data.price, changePct = data.changePct,
+                speed = speed, amount = data.amountStr, volRatio = data.volRatio,
+                currentHand = currentHand, largeAsks = data.largeAsks, largeBids = data.largeBids,
+                largeAsksSpeak = data.largeAsksSpeak, largeBidsSpeak = data.largeBidsSpeak, isRunning = true
+            )
+        }
         if (isPaused) return
 
         // ── TTS 防卡死：息屏后 isSpeaking 可能永远不回调 → 35秒强制重置 ──
@@ -430,18 +468,67 @@ class StockMonitorService : Service() {
         }
     }
 
+    /** 从所有缓存数据源构建富上下文（v1.1.0 — 四象限防伪 + Alpha差值） */
+    private fun buildContext(data: StockData, speed: Double = 0.0): MarketContext {
+        val sector = if (config.conceptAutoDetect && conceptBlockCache.industry.isNotBlank()) {
+            buildString {
+                append(conceptBlockCache.industry)
+                if (conceptBlockCache.topConcept.isNotBlank()) append("/${conceptBlockCache.topConcept}")
+            }
+        } else config.stockSector
+
+        // ── 四象限资金防伪判定 ──
+        val fundInflow = fundFlowCache.mainForce > 100
+        val fundOutflow = fundFlowCache.mainForce < -100
+        val speedUp = speed > 0.5
+        val speedDown = speed < -0.5
+        val speedNegative = speed < 0
+        val speedPositive = speed > 0
+        val quadrant = when {
+            fundInflow && speedUp -> "主力真拉升（净流入+涨速共振）"
+            fundInflow && speedNegative -> "主力暗中派发（净流入但涨速为负，量价背离）"
+            fundOutflow && speedUp -> "散户推升/无量空涨（净流出但涨速为正，缺大单支持）"
+            fundOutflow && speedDown -> "主力真砸盘（净流出+跌速共振）"
+            fundInflow && speedPositive -> "主力偏多，涨速温和"
+            fundOutflow && speedNegative -> "主力偏空，跌速温和"
+            fundInflow -> "主力流入但涨速不明"
+            fundOutflow -> "主力流出但跌速不明"
+            else -> ""
+        }
+
+        // Alpha差值
+        val sectorPct = if (conceptBlockCache.industryPct != 0.0) conceptBlockCache.industryPct
+                        else conceptBlockCache.topConceptPct
+        val alpha = conceptBlockCache.alphaDiff(data.changePct)
+
+        return MarketContext(
+            stockSector = sector,
+            fundFlowDirection = fundFlowCache.directionLabel.takeIf { config.fundFlowEnabled },
+            fundFlowAmount = fundFlowCache.mainForceStr.takeIf { config.fundFlowEnabled },
+            fundFlowQuadrant = quadrant.takeIf { config.fundFlowEnabled && it.isNotBlank() },
+            blockInfo = conceptBlockCache.toContextSlice().trimEnd('。').takeIf { config.conceptAutoDetect },
+            relativeStrength = conceptBlockCache.relativeStrength(data.changePct).takeIf { config.conceptAutoDetect },
+            alphaDiff = alpha.takeIf { config.conceptAutoDetect && it.isNotBlank() },
+            sectorPct = sectorPct,
+            dragonTigerTag = dragonTigerTag.takeIf { config.dragonTigerEnabled && it.isNotBlank() },
+            mcapContext = data.mcapAssessment.takeIf { it.isNotBlank() },
+            limitDistance = buildString {
+                if (config.alertLimitDistance) {
+                    if (data.limitUpDist > 0 && data.limitUpDist < 3.0) append("距涨停仅${"%.1f".format(data.limitUpDist)}%")
+                    if (data.limitDownDist > 0 && data.limitDownDist < 3.0) append("距跌停仅${"%.1f".format(data.limitDownDist)}%")
+                }
+            }.takeIf { it.isNotBlank() },
+            newsHeadline = globalSentiment.toFlashNewsBlock().takeIf { it.isNotBlank() }?.take(80),
+            alertStats = ""
+        )
+    }
+
     private fun maybeGenerateAiSummary(data: StockData, speed: Double) {
         if (!config.aiEnabled || config.aiApiKey.isBlank()) return
         if (aiRequestInFlight) return
         if (normalBroadcastCount % config.aiSummaryInterval != 0) return
         aiRequestInFlight = true
-        val ctx = MarketContext(
-            newsHeadline = aiAnalyzer.pickNews(config.stockCode),
-            fundFlow = if (data.changePct > 0) "主力净流入" else "主力净流出",
-            fundFlowAmount = "${"%.1f".format(Math.abs(data.changePct) * 1.5)}亿",
-            alertStats = "",
-            stockSector = config.stockSector
-        )
+        val ctx = buildContext(data, speed)
         aiAnalyzer.generateSummary(ctx, lastShanghaiIndex, globalSentiment) { summary ->
             aiRequestInFlight = false
             if (summary != null) uiHandler.post {
@@ -475,7 +562,8 @@ class StockMonitorService : Service() {
         aiRequestInFlight = true
         val snapshots = aiAnalyzer.getRecentSnapshots()
         val alertText = lastAlertText
-        aiAnalyzer.generatePostAlertAnalysis(alertText, snapshots, lastShanghaiIndex, globalSentiment, config.stockSector) { result ->
+        val postCtx = lastPostAlertData?.let { buildContext(it, 0.0) } ?: MarketContext(stockSector = config.stockSector)
+        aiAnalyzer.generatePostAlertAnalysis(alertText, snapshots, lastShanghaiIndex, globalSentiment, config.stockSector, postCtx) { result ->
             aiRequestInFlight = false
             if (result != null) uiHandler.post {
                 aiLog("异动复盘: ${result.take(30)}...")
@@ -495,11 +583,14 @@ class StockMonitorService : Service() {
         netExecutor.execute {
             val history = StockFetcher.fetchDailyHistoryText(config.stockCode)
             val index = StockFetcher.fetchShanghaiIndexText()
+            // 复用 buildContext() 确保双AI获取完整上下文（四象限/流通市值/涨跌停等）
+            val ctx = lastStockData?.let { buildContext(it, lastSpeed) } ?: MarketContext()
             aiAnalyzer.generateDualAnalysis(
                 aiAnalyzer.getRecentSnapshots(),
                 dailyHistory = history,
                 shanghaiIndex = index,
-                globalSentiment = globalSentiment
+                globalSentiment = globalSentiment,
+                context = ctx
             ) { text ->
                 aiRequestInFlight = false
                 if (text != null) uiHandler.post {
@@ -517,15 +608,42 @@ class StockMonitorService : Service() {
         val h = buildString { append(data.name); if (config.speakPrice) append(spokenPrice(data.price)) }
         parts.add(h)
         if (config.speakPct) parts.add(spokenChange(data.changePct))
+
+        // v1.1.0: 主力资金代替成交额（信息密度更高，含四象限判定）
+        if (config.speakAmount) {
+            if (config.fundFlowEnabled && !fundFlowCache.isEmpty) {
+                val flowText = "${fundFlowCache.directionLabel}${fundFlowCache.mainForceStr}"
+                // 四象限：流入+跌速 → 派发警告；流出+涨速 → 无量空涨
+                val fundInflow = fundFlowCache.mainForce > 100
+                val fundOutflow = fundFlowCache.mainForce < -100
+                if (fundInflow && speed < 0) {
+                    parts.add("$flowText（⚠主力派发）")
+                } else if (fundOutflow && speed > 0.5) {
+                    parts.add("$flowText（⚠无量空涨）")
+                } else {
+                    parts.add(flowText)
+                }
+            } else {
+                parts.add("成交${spokenAmount(data.amountStr)}")
+            }
+        }
+
         if (config.speakSpeed && Math.abs(speed) >= 0.05) parts.add(spokenSpeed(speed))
-        if (config.speakAmount) parts.add("成交${spokenAmount(data.amountStr)}")
         if (config.speakVolRatio) spokenVolRatio(data.volRatio)?.let { parts.add(it) }
         if (config.speakCurrentHand && currentHand >= dynThreshold) parts.add("现手${spokenHand(currentHand)}")
+
+        // v1.1.0: 板块相对强弱（概念板块自动识别时）
+        if (config.conceptAutoDetect && !conceptBlockCache.isEmpty) {
+            val rs = conceptBlockCache.relativeStrength(data.changePct)
+            if (rs.isNotBlank()) parts.add(rs)
+        }
+
         val main = parts.joinToString("，") + "。"
         val alert = if (config.speakLargeOrders) spokenLargeOrders(data)?.let { "注意，$it。" } ?: "" else ""
         val event = intervalLargeEvents.maxByOrNull { it.third }?.let {
             if (it.third >= dynThreshold) "刚才有${spokenHand(it.third)}${it.second}。" else ""
         } ?: ""
+
         // 成交明细播报
         val detail = if (config.speakTransactionDetail && currentHand >= dynThreshold) {
             val dir = when { speed > 0.3 -> "买入"; speed < -0.3 -> "卖出"; else -> "" }
@@ -543,6 +661,14 @@ class StockMonitorService : Service() {
         else -> "大单" to "激烈成交"
     }
 
+    private fun dismissAlert() {
+        ttsEngine.stop(); NotificationHelper.cancelAlert(this)
+        alertActive = false; alertSettleCount = 0; postAlertPhase = 0
+        lastPostAlertData = null; batchQueue.clear()
+        aiLog("🔕 关闭异动提醒")
+        updateNotif()
+    }
+
     // ── 异动前缀（随机切换，确保异动播报有辨识度） ──
 
     private fun alertPrefix(): String {
@@ -554,9 +680,9 @@ class StockMonitorService : Service() {
 
     private fun getDynamicThreshold(turnover: Double, volRatio: Double): Int {
         val base = config.largeOrderThreshold
-        val cal = java.util.Calendar.getInstance()
-        val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
-        val minute = cal.get(java.util.Calendar.MINUTE)
+        calendar.timeInMillis = System.currentTimeMillis()
+        val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
+        val minute = calendar.get(java.util.Calendar.MINUTE)
         // 换手率系数
         // 9:30-10:30 换手率绝对值太低无意义，只看量比
         // 10:30 之后恢复原逻辑，但底部条件必须换手+量比双低才降阈值
@@ -737,6 +863,11 @@ class StockMonitorService : Service() {
     }
 
     private fun updateNotif(data: StockData? = null) {
+        // 变更检测：价格/涨跌幅/暂停状态未变则跳过通知栏刷新
+        if (data != null && data.price == lastNotifPrice && data.changePct == lastNotifPct && isPaused == lastNotifPaused) return
+        lastNotifPrice = data?.price ?: -1.0
+        lastNotifPct = data?.changePct ?: 0.0
+        lastNotifPaused = isPaused
         val builder = if (data != null)
             NotificationHelper.buildWithData(this, data.name, data.price, data.changePct, isPaused)
         else {

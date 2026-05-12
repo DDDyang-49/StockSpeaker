@@ -139,6 +139,11 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     }
     var stockSector by remember { mutableStateOf(cfg.stockSector) }
     var selectedTab by remember { mutableStateOf(0) }
+    // v1.1.0: 新数据源开关（北向已砍——A股盘中不再披露实时北向资金）
+    var fundFlowEnabled by remember { mutableStateOf(cfg.fundFlowEnabled) }
+    var dragonTigerEnabled by remember { mutableStateOf(cfg.dragonTigerEnabled) }
+    var conceptAutoDetect by remember { mutableStateOf(cfg.conceptAutoDetect) }
+    var alertLimitDist by remember { mutableStateOf(cfg.alertLimitDistance) }
 
     val state by StockMonitorService.uiState.collectAsState()
     val ctx = LocalContext.current
@@ -164,7 +169,11 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
             aiTwoProvider = aiTwoProvider, aiTwoApiUrl = pi2.url, aiTwoModel = aiTwoModel.trim().ifBlank { pi2.model },
             aiTwoThinkingModel = pi2.thinkingModel,
             monitoringActive = true,
-            stockSector = stockSector.trim()
+            stockSector = stockSector.trim(),
+            fundFlowEnabled = fundFlowEnabled,
+            dragonTigerEnabled = dragonTigerEnabled,
+            conceptAutoDetect = conceptAutoDetect,
+            alertLimitDistance = alertLimitDist
         )
     }
 
@@ -232,6 +241,10 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                 aiTwoKey, { aiTwoKey = it },
                 showKey2, { showKey2 = it }, aiKeyNote, { aiKeyNote = it },
                 aiTwoKeyNote, { aiTwoKeyNote = it }, stockSector, { stockSector = it },
+                fundFlowEnabled, { fundFlowEnabled = it },
+                dragonTigerEnabled, { dragonTigerEnabled = it },
+                conceptAutoDetect, { conceptAutoDetect = it },
+                alertLimitDist, { alertLimitDist = it },
                 { buildConfig() }, configManager)
         }
     }
@@ -369,6 +382,10 @@ private fun SettingsTab(
     aiKeyNote: String, onAiKeyNote: (String) -> Unit,
     aiTwoKeyNote: String, onAiTwoKeyNote: (String) -> Unit,
     stockSector: String, onStockSector: (String) -> Unit,
+    fundFlowEnabled: Boolean, onFundFlow: (Boolean) -> Unit,
+    dragonTigerEnabled: Boolean, onDragonTiger: (Boolean) -> Unit,
+    conceptAutoDetect: Boolean, onConcept: (Boolean) -> Unit,
+    alertLimitDist: Boolean, onAlertLimit: (Boolean) -> Unit,
     buildConfig: () -> AppConfig,
     configManager: ConfigManager
 ) {
@@ -529,6 +546,29 @@ private fun SettingsTab(
                     Spacer(Modifier.width(8.dp))
                     Text("启用辅AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // ── 主力视角数据源（v1.1.0） ──
+        Section("主力视角 · 持仓防守增强") {
+            Text("以下数据为零鉴权免费API，开启后可大幅提升播报和AI分析的信息密度。北向资金已砍——A股盘中不再披露实时数据。",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Cb("资金流向（含防伪）", fundFlowEnabled, enabled, onFundFlow)
+                    Cb("龙虎榜（静态标签）", dragonTigerEnabled, enabled, onDragonTiger)
+                }
+                Column(Modifier.weight(1f)) {
+                    Cb("自动识别题材", conceptAutoDetect, enabled, onConcept)
+                    Cb("涨跌停预警", alertLimitDist, enabled, onAlertLimit)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            if (conceptAutoDetect) {
+                Text("开启「自动识别题材」后，上方的「所属题材」会被自动检测覆盖，无需手动填写。",
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.tertiary)
             }
         }
         Spacer(Modifier.height(12.dp))

@@ -13,42 +13,83 @@ data class StockData(
     val amountWan: Double = 0.0,
     val volRatio: Double = 0.0,
     val turnover: Double = 0.0,
+    val circulatingMcap: Double = 0.0,  // 流通市值(亿元) arr[45]
+    val limitUp: Double = 0.0,          // 涨停价 arr[47]
+    val limitDown: Double = 0.0,        // 跌停价 arr[48]
     val bids: List<Pair<Double, Int>> = emptyList(),
     val asks: List<Pair<Double, Int>> = emptyList()
 ) {
     val amountStr: String
         get() = if (amountWan > 10000) "${"%.2f".format(amountWan / 10000)}亿" else "${"%.2f".format(amountWan)}万"
 
-    val largeBids: List<String>
-        get() = bids.mapIndexedNotNull { i, (p, v) ->
+    val mcapStr: String
+        get() = if (circulatingMcap > 10000) "${"%.2f".format(circulatingMcap / 10000)}万亿"
+                else if (circulatingMcap > 0) "${"%.0f".format(circulatingMcap)}亿" else ""
+
+    /** 流通市值评估（短线视角） */
+    val mcapAssessment: String
+        get() = when {
+            circulatingMcap <= 0 -> ""
+            circulatingMcap < 50 -> "小盘游资票（流通${mcapStr}，极易被资金操控）"
+            circulatingMcap <= 200 -> "中盘票（流通${mcapStr}）"
+            else -> "大盘机构票（流通${mcapStr}，需板块大级别资金共振）"
+        }
+
+    val limitUpDist: Double
+        get() = if (limitUp > 0 && price > 0) (limitUp - price) / price * 100 else 0.0
+
+    val limitDownDist: Double
+        get() = if (limitDown > 0 && price > 0) (price - limitDown) / price * 100 else 0.0
+
+    // 延迟缓存：每次2秒轮询可能被多次访问（uiState + 播报），避免重复map
+    val largeBids: List<String> by lazy {
+        bids.mapIndexedNotNull { i, (p, v) ->
             if (v > 0 && p > 0) "买${i + 1}排${v}手" else null
         }
+    }
 
-    val largeAsks: List<String>
-        get() = asks.mapIndexedNotNull { i, (p, v) ->
+    val largeAsks: List<String> by lazy {
+        asks.mapIndexedNotNull { i, (p, v) ->
             if (v > 0 && p > 0) "卖${i + 1}排${v}手" else null
         }
+    }
 
-    val largeBidsSpeak: List<String>
-        get() = bids.mapIndexedNotNull { i, (p, v) ->
+    val largeBidsSpeak: List<String> by lazy {
+        bids.mapIndexedNotNull { i, (p, v) ->
             if (v > 0 && p > 0) "买${i + 1}${v}手托单" else null
         }
+    }
 
-    val largeAsksSpeak: List<String>
-        get() = asks.mapIndexedNotNull { i, (p, v) ->
+    val largeAsksSpeak: List<String> by lazy {
+        asks.mapIndexedNotNull { i, (p, v) ->
             if (v > 0 && p > 0) "卖${i + 1}${v}手压单" else null
         }
+    }
 }
 
-// ── 行情背景数据（消息面+资金流向，暂无免费API时使用Mock） ──
+// ── 行情背景数据（注入AI Prompt的富上下文） ──
 
 data class MarketContext(
-    val newsSentiment: String = "中性",
+    val stockSector: String = "",
+    // 资金面（来自 FundFlowFetcher + 四象限防伪）
+    val fundFlowDirection: String = "",
+    val fundFlowAmount: String = "",
+    val fundFlowQuadrant: String = "",    // 四象限判定结果（注入AI Prompt）
+    // 板块归属 + Alpha差值（来自 ConceptBlockFetcher）
+    val blockInfo: String = "",
+    val relativeStrength: String = "",
+    val alphaDiff: String = "",          // "个股+2.1% - 板块+0.8% = +1.3%"
+    val sectorPct: Double = 0.0,         // 板块实时涨跌幅
+    // 龙虎榜静态标签（来自 DragonTigerFetcher，SharedPreferences日期缓存）
+    val dragonTigerTag: String = "",
+    // 流通市值评估（来自 StockFetcher）
+    val mcapContext: String = "",
+    // 涨跌停距离
+    val limitDistance: String = "",
+    // 消息面
     val newsHeadline: String = "",
-    val fundFlow: String = "主力净流入",
-    val fundFlowAmount: String = "0亿",
-    val alertStats: String = "",
-    val stockSector: String = ""
+    // 异动统计（保留兼容）
+    val alertStats: String = ""
 )
 
 object StockFetcher {
@@ -60,7 +101,6 @@ object StockFetcher {
     /** 根据股票名称搜索代码，返回 (代码, 名称) 或 null */
     fun searchStock(keyword: String): Pair<String, String>? {
         if (keyword.isBlank()) return null
-        // 纯数字直接当作代码
         if (keyword.all { it.isDigit() }) return Pair(keyword, keyword)
         try {
             val url = "https://smartbox.gtimg.cn/s3/?q=${java.net.URLEncoder.encode(keyword, "UTF-8")}&t=all"
@@ -68,11 +108,9 @@ object StockFetcher {
             val response = client.newCall(request).execute()
             response.use { resp ->
                 val body = resp.body?.string() ?: return null
-                // 格式: ..."1^股票名~代码~市场代码~..."
                 val match = Regex("~(\\d{6})~").find(body)
                 if (match != null) {
                     val code = match.groupValues[1]
-                    // 提取名称
                     val nameMatch = Regex("\\^(.*?)~$code").find(body)
                     val name = nameMatch?.groupValues?.get(1) ?: code
                     return Pair(code, name)
@@ -104,6 +142,9 @@ object StockFetcher {
         }
     }
 
+    private const val SENTINEL_INT = 2147483647   // 脏数据标记值
+    private const val SENTINEL_DBL = 2147483647.0
+
     private fun parse(rawData: String, threshold: Int): StockData? {
         val lines = rawData.trim().split(";")
         for (line in lines) {
@@ -116,24 +157,38 @@ object StockFetcher {
             val code = arr[2]
             val price = arr[3].toDoubleOrNull() ?: continue
             val changePct = arr[32].toDoubleOrNull() ?: 0.0
-            val totalVol = arr[6].toIntOrNull() ?: 0
-            val amountWan = arr[37].toDoubleOrNull() ?: 0.0
-            val volRatio = arr[49].toDoubleOrNull() ?: 0.0
-            val turnover = arr[38].toDoubleOrNull() ?: 0.0
+            var totalVol = arr[6].toIntOrNull() ?: 0
+            if (totalVol == SENTINEL_INT) totalVol = 0
+            var amountWan = arr[37].toDoubleOrNull() ?: 0.0
+            if (amountWan == SENTINEL_DBL) amountWan = 0.0
+            var volRatio = arr[49].toDoubleOrNull() ?: 0.0
+            if (volRatio == SENTINEL_DBL) volRatio = 0.0
+            var turnover = arr[38].toDoubleOrNull() ?: 0.0
+            if (turnover == SENTINEL_DBL) turnover = 0.0
+            var circulatingMcap = arr[45].toDoubleOrNull() ?: 0.0
+            if (circulatingMcap == SENTINEL_DBL) circulatingMcap = 0.0
+            var limitUp = arr[47].toDoubleOrNull() ?: 0.0
+            if (limitUp == SENTINEL_DBL) limitUp = 0.0
+            var limitDown = arr[48].toDoubleOrNull() ?: 0.0
+            if (limitDown == SENTINEL_DBL) limitDown = 0.0
 
             val bids = (9..17 step 2).map { i ->
-                val p = arr[i].toDoubleOrNull() ?: 0.0
-                val v = arr[i + 1].toIntOrNull() ?: 0
+                var p = arr[i].toDoubleOrNull() ?: 0.0
+                if (p == SENTINEL_DBL) p = 0.0
+                var v = arr[i + 1].toIntOrNull() ?: 0
+                if (v == SENTINEL_INT) v = 0
                 Pair(p, if (v >= threshold) v else 0)
             }
 
             val asks = (19..27 step 2).map { i ->
-                val p = arr[i].toDoubleOrNull() ?: 0.0
-                val v = arr[i + 1].toIntOrNull() ?: 0
+                var p = arr[i].toDoubleOrNull() ?: 0.0
+                if (p == SENTINEL_DBL) p = 0.0
+                var v = arr[i + 1].toIntOrNull() ?: 0
+                if (v == SENTINEL_INT) v = 0
                 Pair(p, if (v >= threshold) v else 0)
             }
 
-            return StockData(name, code, price, changePct, totalVol, amountWan, volRatio, turnover, bids, asks)
+            return StockData(name, code, price, changePct, totalVol, amountWan, volRatio, turnover, circulatingMcap, limitUp, limitDown, bids, asks)
         }
         return null
     }

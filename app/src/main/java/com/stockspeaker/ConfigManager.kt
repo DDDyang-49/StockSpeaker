@@ -49,13 +49,29 @@ data class AppConfig(
     val aiTwoThinkingModel: String = "",
     // 运行状态
     val monitoringActive: Boolean = false,
-    val stockSector: String = ""
+    val stockSector: String = "",
+    // v1.1.0: 新数据源开关（北向已砍——A股盘中不再披露实时北向资金）
+    val fundFlowEnabled: Boolean = true,
+    val dragonTigerEnabled: Boolean = true,
+    val conceptAutoDetect: Boolean = true,
+    val alertLimitDistance: Boolean = true
 )
 
 class ConfigManager(context: Context) {
     private val prefs = context.getSharedPreferences("config", Context.MODE_PRIVATE)
 
     fun load(): AppConfig {
+        // 内存缓存：2秒高频轮询避免反复读SharedPreferences磁盘IO
+        val now = System.currentTimeMillis()
+        val cached = cache
+        if (cached != null && now - cacheTime < 2000) return cached
+        val config = readFromPrefs()
+        cache = config
+        cacheTime = now
+        return config
+    }
+
+    private fun readFromPrefs(): AppConfig {
         return AppConfig(
             stockCode = prefs.getString("stock_code", "603960") ?: "603960",
             speakInterval = prefs.getInt("speak_interval", 15),
@@ -83,11 +99,16 @@ class ConfigManager(context: Context) {
             aiTwoModel = prefs.getString("ai_two_model", "Qwen3-235B-A22B-2507") ?: "Qwen3-235B-A22B-2507",
             aiTwoThinkingModel = prefs.getString("ai_two_thinking_model", "") ?: "",
             monitoringActive = prefs.getBoolean("monitoring_active", false),
-            stockSector = prefs.getString("stock_sector", "") ?: ""
+            stockSector = prefs.getString("stock_sector", "") ?: "",
+            fundFlowEnabled = prefs.getBoolean("fund_flow_enabled", true),
+            dragonTigerEnabled = prefs.getBoolean("dragon_tiger_enabled", true),
+            conceptAutoDetect = prefs.getBoolean("concept_auto_detect", true),
+            alertLimitDistance = prefs.getBoolean("alert_limit_distance", true)
         )
     }
 
     fun save(config: AppConfig) {
+        cache = config  // 即时更新缓存，避免下次load()重新读磁盘
         prefs.edit()
             .putString("stock_code", config.stockCode)
             .putInt("speak_interval", config.speakInterval)
@@ -116,6 +137,10 @@ class ConfigManager(context: Context) {
             .putString("ai_two_thinking_model", config.aiTwoThinkingModel)
             .putBoolean("monitoring_active", config.monitoringActive)
             .putString("stock_sector", config.stockSector)
+            .putBoolean("fund_flow_enabled", config.fundFlowEnabled)
+            .putBoolean("dragon_tiger_enabled", config.dragonTigerEnabled)
+            .putBoolean("concept_auto_detect", config.conceptAutoDetect)
+            .putBoolean("alert_limit_distance", config.alertLimitDistance)
             .apply()
     }
 
@@ -161,5 +186,10 @@ class ConfigManager(context: Context) {
         list.add(0, Pair(code, name))
         if (list.size > 10) repeat(list.size - 10) { list.removeAt(list.size - 1) }
         prefs.edit().putString("stock_code_history", list.joinToString("|||") { "${it.first}|${it.second}" }).apply()
+    }
+
+    companion object {
+        private var cache: AppConfig? = null
+        private var cacheTime: Long = 0L
     }
 }

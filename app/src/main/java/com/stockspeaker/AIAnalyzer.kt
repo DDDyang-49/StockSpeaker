@@ -24,6 +24,30 @@ data class MarketSnapshot(
     val turnover: Double
 )
 
+// ── 持仓建议（四选一） ──
+
+enum class Stance(val label: String) {
+    HOLD("坚定格局"),
+    SELL_HIGH("逢高减仓·倒T"),
+    BUY_LOW("逢低吸筹·正T"),
+    EXIT("危险清仓");
+
+    val bracketLabel: String get() = "【$label】"
+
+    companion object {
+        fun fromContent(content: String): Stance? {
+            val head = content.take(8)
+            return when {
+                "【坚定格局】" in content || "坚定格局" in head -> HOLD
+                "【逢高减仓" in content || "逢高减仓" in head -> SELL_HIGH
+                "【逢低吸筹" in content || "逢低吸筹" in head -> BUY_LOW
+                "【危险清仓】" in content || "危险清仓" in head -> EXIT
+                else -> null
+            }
+        }
+    }
+}
+
 // ── 异动模式 ──
 
 enum class PatternType {
@@ -71,22 +95,33 @@ class AIAnalyzer(
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
     @Volatile private var cachedDualAnalysis: String? = null
-    @Volatile var lastStance: String? = null  // 上次AI立场："看多"/"看空"/"多空焦灼"
+    @Volatile var lastStance: Stance? = null  // 上次持仓建议（四选一枚举）
 
-    // ── 固定人设（统一，不随机） ──
-    private val FIXED_PERSONA = "你是一个拥有20年A股游资经验的无情机器。只根据提供的盘面最新数据，用2句话给出诊断。" +
-        "第一句话必须明确：【看多】、【看空】或【多空焦灼】。" +
-        "第二句话说明最核心的数据理由。拒绝废话，拒绝风险提示。" +
-        "【铁律】你必须将该股的实时走势与当前全市场情绪进行对比！" +
-        "如果大盘情绪高潮但该股滞涨，必须判定为弱势跟风/掉队被抛弃；" +
-        "如果大盘冰点该股却放量拉升，必须判定为资金抱团或新周期试错。" +
-        "必须在回答中体现大局观，指出高低位切换或主线扩散的迹象。"
+    // ── 固定人设：持仓防守 + 做T闭环（短线游资视角） ──
+    private val FIXED_PERSONA = "你是一个手握重金的A股一线游资，现在的任务是帮我进行【持仓防守与做T闭环】。" +
+        "你的交易体系：买入不急，卖出坚决，低吸有据。绝不和股票谈恋爱。以板块共振判断去留，以盘口量价背离寻找买卖点。" +
+        "第一句话必须冷酷地给出持仓建议（四选一）：" +
+        "【坚定格局】（多头强势，锁仓不动）、" +
+        "【逢高减仓·倒T】（拉升乏力/诱多/无量空涨，提示卖点）、" +
+        "【逢低吸筹·正T】（急跌错杀/强支撑洗盘，提示低吸买点）、" +
+        "【危险清仓】（板块退潮/资金真砸，坚决离场）。" +
+        "风格：像交易主管在指导持仓研究员，杀伐果断，直击要害，指出盘面最危险的隐患或最强的支撑依据。" +
+        "【铁律1：板块去留】必须对比该股与所属题材的强弱。如果板块大涨而它放量滞涨，必须判定为跟风杂毛，提示清仓换股；如果板块大跌它抗跌，提示承接强可格局。" +
+        "【铁律2：做T闭环】倒T：短线急速拉升但上方压单死活吃不透（或量能跟不上）→『日内高抛做T』。正T：急跌但下方托单密集承接有力（或缩量回踩强支撑）→『逢低吸筹做T』。" +
+        "【铁律3：底部异动】如果它处于水下或横盘，突然出现连续买单推升且量比放大，提示『有资金点火，观察承接』，切忌盲目割肉。" +
+        "【铁律4：四象限资金防伪】严格按以下逻辑判断主力真实意图——" +
+        "①净流入+涨速>0.5%=主力真拉升（格局）；" +
+        "②净流入+涨速<0=上方抛压大，主力暗中派发（警惕/减仓）；" +
+        "③净流出+涨速>0.5%=无量空涨/散户推升，缺乏大单支持，随时跳水（逢高倒T）；" +
+        "④净流出+涨速<-0.5%=主力真砸盘（危险清仓）。" +
+        "【铁律5：Alpha差值】必须根据个股涨幅-板块涨幅的Alpha差值判断个股地位。差值>0说明强于板块，给予更多容忍度；差值<0判定为跟风杂毛，遇阻坚决提示减仓或清仓。" +
+        "【铁律6：流通市值】流通市值<50亿极易被游资操控，须警惕假突破；>200亿需要板块大级别资金共振才可持续。"
 
     // ── 消息面池（30+条，按时间+股票代码混合选择，保证多变） ──
 
     private val newsPool = listOf(
         "板块轮动加速，资金高低切换明显",
-        "北向资金今日净买入，权重股获青睐",
+        "主力资金暗流涌动，盘口异动频次增加",
         "行业政策面利好频出，市场情绪回暖",
         "量能持续萎缩，短线博弈加剧",
         "大单资金午后异动，游资活跃度提升",
@@ -273,12 +308,13 @@ class AIAnalyzer(
     fun getCachedDualAnalysis(): String? = cachedDualAnalysis
     fun clearCachedDualAnalysis() { cachedDualAnalysis = null }
 
-    /** 双AI并行分析 + 预生成缓存（含全市场情绪注入） */
+    /** 双AI并行分析 + 预生成缓存（含全市场情绪+资金面+板块上下文） */
     fun generateDualAnalysis(
         snapshots: List<MarketSnapshot>,
         dailyHistory: String = "",
         shanghaiIndex: String = "",
         globalSentiment: GlobalSentiment = GlobalSentiment(),
+        context: MarketContext = MarketContext(),
         callback: (String?) -> Unit
     ) {
         val configA = aiConfigProvider()
@@ -294,7 +330,7 @@ class AIAnalyzer(
             // AI-A：技术面（思考模式，深度推理）
             dualExecutor.execute {
                 try {
-                    val r = callAiForStance(configA, buildTechPrompt(snapshots, dailyHistory, shanghaiIndex, globalSentiment), useThinking = true)
+                    val r = callAiForStance(configA, buildTechPrompt(snapshots, dailyHistory, shanghaiIndex, globalSentiment, context), useThinking = true)
                     resultA = r
                     onLog("双AI-A: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                 } catch (_: Exception) { onLog("双AI-A: 异常") }
@@ -305,7 +341,7 @@ class AIAnalyzer(
             if (useB) {
                 dualExecutor.execute {
                     try {
-                        val r = callAiForStance(configB, buildFundPrompt(snapshots, dailyHistory, shanghaiIndex, globalSentiment), useThinking = false)
+                        val r = callAiForStance(configB, buildFundPrompt(snapshots, dailyHistory, shanghaiIndex, globalSentiment, context), useThinking = false)
                         resultB = r
                         onLog("双AI-B: ${if (r != null) "stance=${r.stance} ${r.reason}" else "失败"}")
                     } catch (_: Exception) { onLog("双AI-B: 异常") }
@@ -327,36 +363,50 @@ class AIAnalyzer(
 
     // ── 构建提示词 ──
 
-    private fun buildTechPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment()): String {
+    private fun buildTechPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), context: MarketContext = MarketContext()): String {
         val latest = snapshots.last()
         val trend = describeTrend(snapshots)
         return buildString {
             val slice = sentiment.toSentimentSlice()
             if (slice.isNotBlank()) append("$slice ")
+            // 资金面（含四象限防伪标记）
+            if (context.fundFlowDirection.isNotBlank()) {
+                append("主力${context.fundFlowDirection}${context.fundFlowAmount}")
+                if (context.fundFlowQuadrant.isNotBlank()) append("【${context.fundFlowQuadrant}】")
+                append("；")
+            }
+            if (context.mcapContext.isNotBlank()) append("流通市值：${context.mcapContext}；")
+
             append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
             append("成交${latest.amountStr}，近30秒${trend}。")
             append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
             if (dailyHistory.isNotBlank()) append("近5日K线：${dailyHistory}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
-            append("综合技术面、K线形态、盘口博弈和大盘环境，判断多空方向。")
+            if (context.blockInfo.isNotBlank()) append("板块：${context.blockInfo}。")
+            if (lastStance != null) append("你上次判断为${lastStance.bracketLabel}，请结合最新数据判断是否修正观点。")
+            append("综合技术面、K线形态、盘口博弈、资金流向和大盘环境，给出持仓防守建议（四选一）。")
         }
     }
 
-    private fun buildFundPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment()): String {
+    private fun buildFundPrompt(snapshots: List<MarketSnapshot>, dailyHistory: String = "", shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), context: MarketContext = MarketContext()): String {
         val latest = snapshots.last()
         val trend = describeTrend(snapshots)
-        val fundDir = if (latest.changePct > 0) "偏流入" else if (latest.changePct < 0) "偏流出" else "平衡"
         return buildString {
             val slice = sentiment.toSentimentSlice()
             if (slice.isNotBlank()) append("$slice ")
+            // 真实资金数据替代假数据
+            val fundDir = if (context.fundFlowDirection.isNotBlank()) context.fundFlowDirection
+                else if (latest.changePct > 0) "偏流入" else if (latest.changePct < 0) "偏流出" else "平衡"
             append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
-            append("成交${latest.amountStr}，资金${fundDir}，近30秒${trend}。")
+            append("成交${latest.amountStr}，资金${fundDir}")
+            if (context.fundFlowAmount.isNotBlank()) append("${context.fundFlowAmount}")
+            append("，近30秒${trend}。")
+            if (context.dragonTigerTag.isNotBlank()) append("${context.dragonTigerTag}。")
             append("卖盘${latest.largeAsksCount}单对买盘${latest.largeBidsCount}单。")
             if (dailyHistory.isNotBlank()) append("近日K线：${dailyHistory}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
-            append("综合资金流向、主力意图、近日K线趋势和大盘环境，判断多空方向。")
+            if (lastStance != null) append("你上次判断为${lastStance.bracketLabel}，请结合最新数据判断是否修正观点。")
+            append("综合资金流向、主力意图、近日K线趋势和大盘环境，给出持仓防守建议。")
         }
     }
 
@@ -374,33 +424,24 @@ class AIAnalyzer(
         }
     }
 
-    // ── 调用 AI 获取结构化立场 ──
+    // ── 通用 AI HTTP 调用（消除样板重复） ──
 
-    private fun callAiForStance(config: AiConfig, prompt: String, useThinking: Boolean = false): StanceResult? {
-        val systemPrompt = "你是一个短线盘面分析助手。只看多空方向，不做完整分析。" +
-            "必须严格按JSON格式输出：{\"stance\":1,\"reason\":\"简要理由\"}。" +
-            "stance: 1=偏多, 0=震荡, -1=偏空。reason不超过15字。不要输出任何其他内容。"
-
-        // 思考模式仅用于主AI的复杂技术分析，辅AI保持快速
-        val model = if (useThinking && config.thinkingModel.isNotBlank()) {
-            onLog("双AI: 启用思考模式 ${config.thinkingModel}")
-            config.thinkingModel
-        } else config.model
-
+    private fun callAi(model: String, systemPrompt: String, userPrompt: String,
+                       apiUrl: String, apiKey: String, logPrefix: String = "AI"): String? {
         return try {
             val json = """
                 |{
-                |  "model": "${model}",
+                |  "model": "$model",
                 |  "messages": [
                 |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
-                |    {"role": "user", "content": ${toJsonStr(prompt)}}
+                |    {"role": "user", "content": ${toJsonStr(userPrompt)}}
                 |  ]
                 |}
             """.trimMargin()
 
             val request = Request.Builder()
-                .url(config.apiUrl)
-                .header("Authorization", "Bearer ${config.apiKey}")
+                .url(apiUrl)
+                .header("Authorization", "Bearer $apiKey")
                 .header("Content-Type", "application/json")
                 .post(json.toRequestBody("application/json".toMediaType()))
                 .build()
@@ -408,17 +449,36 @@ class AIAnalyzer(
             val response = httpClient.newCall(request).execute()
             val body = response.body?.string()
             if (!response.isSuccessful) {
-                if (response.code == 403) onLog("✗ HTTP 403: API Key无权访问该模型，请检查设置。")
-                else onLog("双AI HTTP ${response.code} ${body?.take(80) ?: ""}")
+                if (response.code == 403) onLog("$logPrefix: ✗ HTTP 403: API Key无权访问该模型，请检查设置。")
+                else onLog("$logPrefix: ✗ HTTP ${response.code} ${body?.take(80) ?: ""}")
                 return null
             }
 
             val content = extractContent(body)
-            if (content != null) parseStanceResult(content) else null
+            if (content != null) onLog("$logPrefix: ✓ ${content.take(40)}...")
+            else onLog("$logPrefix: ✗ 解析响应失败 body=${body?.take(120) ?: "null"}")
+            content
         } catch (e: Exception) {
-            onLog("双AI调用失败: ${e.message?.take(40)}")
+            onLog("$logPrefix: ✗ ${e.message?.take(50) ?: "未知错误"}")
             null
         }
+    }
+
+    // ── 调用 AI 获取结构化立场 ──
+
+    private fun callAiForStance(config: AiConfig, prompt: String, useThinking: Boolean = false): StanceResult? {
+        val systemPrompt = "你是一个短线盘面分析助手。只看多空方向，不做完整分析。" +
+            "必须严格按JSON格式输出：{\"stance\":1,\"reason\":\"简要理由\"}。" +
+            "stance: 1=偏多, 0=震荡, -1=偏空。reason不超过15字。不要输出任何其他内容。"
+
+        val model = if (useThinking && config.thinkingModel.isNotBlank()) {
+            onLog("双AI: 启用思考模式 ${config.thinkingModel}")
+            config.thinkingModel
+        } else config.model
+
+        val content = callAi(model, systemPrompt, prompt,
+            config.apiUrl, config.apiKey, "双AI")
+        return if (content != null) parseStanceResult(content) else null
     }
 
     /** 解析AI返回的结构化JSON，清洗Markdown包裹 */
@@ -517,7 +577,7 @@ class AIAnalyzer(
         return patterns[Random.nextInt(patterns.size)]
     }
 
-    // ── 构建深度分析提示词（含大盘锚定+AI记忆+全市场情绪） ──
+    // ── 构建深度分析提示词（五层框架：资金面→归因→对手盘→结构→风险） ──
     private fun buildPrompt(context: MarketContext = MarketContext(), alertContext: String = "", shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment()): String {
         if (recentData.isEmpty()) return ""
         val latest = recentData.last()
@@ -572,7 +632,7 @@ class AIAnalyzer(
             }
         }
 
-        // 分时特征：价格穿越均线次数（锯齿程度）
+        // 分时特征
         val avgPrice = history.map { it.price }.average()
         var crosses = 0
         for (i in 1 until history.size) {
@@ -583,31 +643,60 @@ class AIAnalyzer(
         val changeStr = if (latest.changePct > 0) "+${latest.changePct}%" else "${latest.changePct}%"
 
         return buildString {
-            // 题材标签
-            if (context.stockSector.isNotBlank()) append("该股当前核心炒作题材为：【${context.stockSector}】。")
-            // 全局情绪切片放在最开头，赋予 AI 上帝视角
+            // ── 五层分析框架数据注入 ──
+
+            // 【第1层-资金面】（含四象限防伪判定）
+            val fundParts = mutableListOf<String>()
+            if (context.fundFlowDirection.isNotBlank()) {
+                fundParts.add("主力：${context.fundFlowDirection}${if (context.fundFlowAmount.isNotBlank()) " ${context.fundFlowAmount}" else ""}")
+                if (context.fundFlowQuadrant.isNotBlank()) fundParts.add("判定：${context.fundFlowQuadrant}")
+            }
+            if (context.dragonTigerTag.isNotBlank()) fundParts.add(context.dragonTigerTag)
+            if (context.mcapContext.isNotBlank()) fundParts.add("流通市值：${context.mcapContext}")
+            if (fundParts.isNotEmpty()) append("【资金面】${fundParts.joinToString("；")}。")
+
+            // 【第2层-归因】（含Alpha差值）
+            if (context.blockInfo.isNotBlank() || context.alphaDiff.isNotBlank()) {
+                append("【归因】")
+                if (context.blockInfo.isNotBlank()) append("${context.blockInfo}。")
+                if (context.alphaDiff.isNotBlank()) append("Alpha差值：${context.alphaDiff}。")
+                if (context.relativeStrength.isNotBlank()) append("判定：${context.relativeStrength}。")
+            }
+            if (context.stockSector.isNotBlank()) {
+                append("核心题材：【${context.stockSector}】。")
+            }
+
+            // 【第3层-对手盘】+ 全市场情绪
             val slice = sentiment.toSentimentSlice()
             if (slice.isNotBlank()) append("$slice ")
+
+            // 【第4层-结构】
             append("${latest.price}元，$changeStr，近30秒${trend}。")
             append("量比${latest.volRatio}（${volDesc}），成交${latest.amountStr}。")
             append("量价关系：${volPriceRel}。")
             append("日内振幅${amplitude}%。")
             if (orderBook.isNotEmpty()) append("盘口：${orderBook}。")
             if (jagDesc.isNotEmpty()) append(jagDesc + "。")
+            if (context.mcapContext.isNotBlank()) append("流通市值：${context.mcapContext}。")
+
+            // 【第5层-风险】
+            if (context.limitDistance.isNotBlank()) append("【风险】${context.limitDistance}。")
+
+            // 其他上下文
             if (alertContext.isNotBlank()) append(alertContext)
             if (context.alertStats.isNotBlank()) append("近期异动：${context.alertStats}。")
             if (context.newsHeadline.isNotBlank()) append("消息面：${context.newsHeadline}。")
-            if (context.fundFlow.isNotBlank()) append("资金：${context.fundFlow}${context.fundFlowAmount}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
-            if (context.stockSector.isNotBlank()) append("必须结合它所属的题材，判断该股走势是否与大盘情绪产生背离。")
+            if (lastStance != null) append("你上次判断为${lastStance.bracketLabel}，请结合最新数据判断是否修正观点。")
+
             append("从以上数据中挑最值得说的1-2个关键信号，用2-4句口语点评。")
-            append("优先关注量价背离、盘口异动、变盘信号、相对强弱。像老股民跟朋友聊盘面，直接说出判断。不超过80字。")
+            append("优先关注：四象限资金判定、Alpha差值方向、量价异常、涨跌停风险。")
+            append("像交易主管在对讲机里下指令——精准、简洁。不超过80字。")
         }
     }
 
-    /** 异动后的专用深度分析提示词 */
-    fun buildPostAlertPrompt(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), stockSector: String = ""): String {
+    /** 异动后的专用深度分析提示词（含资金+板块上下文） */
+    fun buildPostAlertPrompt(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), stockSector: String = "", context: MarketContext = MarketContext()): String {
         if (snapshots.isEmpty()) return ""
         val latest = snapshots.last()
         val trend = if (snapshots.size >= 2) {
@@ -619,14 +708,20 @@ class AIAnalyzer(
             if (stockSector.isNotBlank()) append("该股当前核心炒作题材为：【${stockSector}】。")
             val slice = sentiment.toSentimentSlice()
             if (slice.isNotBlank()) append("$slice ")
+            // 资金上下文（含四象限判定）
+            if (context.fundFlowDirection.isNotBlank()) {
+                append("主力${context.fundFlowDirection}${context.fundFlowAmount}")
+                if (context.fundFlowQuadrant.isNotBlank()) append("【${context.fundFlowQuadrant}】")
+                append("；")
+            }
             append("刚发生异动：${alertText.take(60)}。")
             append("异动后当前${latest.price}元，${trend}中。")
             append("量比${latest.volRatio}，成交${latest.amountStr}。")
             append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
+            if (context.blockInfo.isNotBlank()) append("板块：${context.blockInfo}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
-            append("分析这波异动可能是什么意图？后续走势怎么看？")
-            if (stockSector.isNotBlank()) append("必须结合它所属的题材，判断该股走势是否与大盘情绪产生背离。")
+            if (lastStance != null) append("你上次判断为${lastStance.bracketLabel}，请结合最新数据判断是否修正观点。")
+            append("结合资金方向和板块强弱，分析这波异动是什么意图？后续走势怎么看？")
             append("用2-3句口语点评，像老股民复盘异动，不超过60字。")
         }
     }
@@ -686,112 +781,39 @@ class AIAnalyzer(
     /** 深度分析：综合技术面+盘口博弈+K线+大盘+全市场情绪，AI自主判断关键信号 */
     fun generateSummary(context: MarketContext = MarketContext(), shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), callback: (String?) -> Unit) {
         val config = aiConfigProvider()
-        if (!config.enabled || config.apiKey.isBlank()) {
-            callback(null)
-            return
-        }
+        if (!config.enabled || config.apiKey.isBlank()) { callback(null); return }
 
         val prompt = buildPrompt(context, shanghaiIndex = shanghaiIndex, sentiment = sentiment)
-        if (prompt.isEmpty()) {
-            callback(null)
-            return
-        }
+        if (prompt.isEmpty()) { callback(null); return }
 
         apiExecutor.execute {
-            try {
-                onLog("🤖 AI: 深度分析 ${config.model}...")
-                val json = """
-                    |{
-                    |  "model": "${config.model}",
-                    |  "messages": [
-                    |    {"role": "system", "content": ${toJsonStr(FIXED_PERSONA)}},
-                    |    {"role": "user", "content": ${toJsonStr(prompt)}}
-                    |  ]
-                    |}
-                """.trimMargin()
-
-                val request = Request.Builder()
-                    .url(config.apiUrl)
-                    .header("Authorization", "Bearer ${config.apiKey}")
-                    .header("Content-Type", "application/json")
-                    .post(json.toRequestBody("application/json".toMediaType()))
-                    .build()
-
-                val response = httpClient.newCall(request).execute()
-                val body = response.body?.string()
-                if (!response.isSuccessful) {
-                    if (response.code == 403) onLog("🤖 AI: ✗ HTTP 403: API Key无权访问该模型，请检查设置。")
-                    else onLog("🤖 AI: ✗ HTTP ${response.code} ${body?.take(60) ?: ""}")
-                    callback(null)
-                    return@execute
-                }
-                val content = extractContent(body)
-                if (content != null) {
-                    onLog("🤖 AI: ✓ ${content.take(40)}...")
-                    lastStance = extractStanceFromContent(content)
-                } else {
-                    onLog("🤖 AI: ✗ 解析响应失败 body=${body?.take(120) ?: "null"}")
-                }
-                callback(content)
-            } catch (e: Exception) {
-                onLog("🤖 AI: ✗ ${e.message?.take(50) ?: "未知错误"}")
-                callback(null)
-            }
+            onLog("🤖 AI: 深度分析 ${config.model}...")
+            val content = callAi(config.model, FIXED_PERSONA, prompt,
+                config.apiUrl, config.apiKey, "🤖 AI")
+            if (content != null) lastStance = extractStanceFromContent(content)
+            callback(content)
         }
     }
 
-    /** 异动后专用AI分析（独立prompt，强调异动背景+全市场情绪） */
-    fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), stockSector: String = "", callback: (String?) -> Unit) {
+    /** 异动后专用AI分析（独立prompt，强调异动背景+全市场情绪+资金上下文） */
+    fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), stockSector: String = "", context: MarketContext = MarketContext(), callback: (String?) -> Unit) {
         val config = aiConfigProvider()
-        if (!config.enabled || config.apiKey.isBlank()) {
-            callback(null)
-            return
-        }
+        if (!config.enabled || config.apiKey.isBlank()) { callback(null); return }
 
-        val prompt = buildPostAlertPrompt(alertText, snapshots, shanghaiIndex, sentiment, stockSector)
+        val prompt = buildPostAlertPrompt(alertText, snapshots, shanghaiIndex, sentiment, stockSector, context)
         if (prompt.isEmpty()) { callback(null); return }
 
         val postAlertPrompt = buildString {
             append("刚发生异动需要复盘。")
             append(FIXED_PERSONA)
-            append("结合异动背景和当前盘面数据，用2句口语给出判断，不超过60字。")
+            append("结合异动背景和当前盘面数据，用2句口语给出持仓建议，不超过60字。")
         }
 
         apiExecutor.execute {
-            try {
-                onLog("🤖 AI: 异动复盘...")
-                val json = """
-                    |{
-                    |  "model": "${config.model}",
-                    |  "messages": [
-                    |    {"role": "system", "content": ${toJsonStr(postAlertPrompt)}},
-                    |    {"role": "user", "content": ${toJsonStr(prompt)}}
-                    |  ]
-                    |}
-                """.trimMargin()
-
-                val request = Request.Builder()
-                    .url(config.apiUrl)
-                    .header("Authorization", "Bearer ${config.apiKey}")
-                    .header("Content-Type", "application/json")
-                    .post(json.toRequestBody("application/json".toMediaType()))
-                    .build()
-
-                val response = httpClient.newCall(request).execute()
-                val body = response.body?.string()
-                if (!response.isSuccessful) {
-                    if (response.code == 403) onLog("🤖 AI: ✗ HTTP 403: API Key无权访问该模型，请检查设置。")
-                    else onLog("🤖 AI: ✗ HTTP ${response.code} ${body?.take(80) ?: ""}")
-                    callback(null); return@execute
-                }
-                val content = extractContent(body)
-                if (content != null) onLog("🤖 AI: ✓ ${content.take(40)}...")
-                else onLog("🤖 AI: ✗ 解析响应失败 body=${body?.take(120) ?: "null"}")
-                callback(content)
-            } catch (e: Exception) {
-                onLog("🤖 AI: ✗ ${e.message?.take(50) ?: "未知错误"}")
-                callback(null)
-            }
+            onLog("🤖 AI: 异动复盘...")
+            val content = callAi(config.model, postAlertPrompt, prompt,
+                config.apiUrl, config.apiKey, "🤖 AI")
+            callback(content)
         }
     }
 
@@ -802,16 +824,7 @@ class AIAnalyzer(
 
     // ── 从 AI 回复中提取立场标签 ──
 
-    private fun extractStanceFromContent(content: String): String? {
-        return when {
-            "【看多】" in content -> "看多"
-            "【看空】" in content -> "看空"
-            "【多空焦灼】" in content -> "多空焦灼"
-            "看多" in content.take(6) -> "看多"
-            "看空" in content.take(6) -> "看空"
-            else -> null
-        }
-    }
+    private fun extractStanceFromContent(content: String): Stance? = Stance.fromContent(content)
 
     // ── 用 Android 内置 JSONObject 提取 API 响应中的 content ──
 
