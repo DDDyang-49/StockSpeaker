@@ -781,10 +781,11 @@ class AIAnalyzer(
     /** 深度分析：综合技术面+盘口博弈+K线+大盘+全市场情绪，AI自主判断关键信号 */
     fun generateSummary(context: MarketContext = MarketContext(), shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), callback: (String?) -> Unit) {
         val config = aiConfigProvider()
-        if (!config.enabled || config.apiKey.isBlank()) { callback(null); return }
+        if (!config.enabled) { callback(null); return }
+        if (config.apiKey.isBlank()) { onLog("🤖 AI: 未配置API Key"); callback(null); return }
 
         val prompt = buildPrompt(context, shanghaiIndex = shanghaiIndex, sentiment = sentiment)
-        if (prompt.isEmpty()) { callback(null); return }
+        if (prompt.isEmpty()) { onLog("🤖 AI: 等待行情数据..."); callback(null); return }
 
         apiExecutor.execute {
             onLog("🤖 AI: 深度分析 ${config.model}...")
@@ -798,10 +799,11 @@ class AIAnalyzer(
     /** 异动后专用AI分析（独立prompt，强调异动背景+全市场情绪+资金上下文） */
     fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), stockSector: String = "", context: MarketContext = MarketContext(), callback: (String?) -> Unit) {
         val config = aiConfigProvider()
-        if (!config.enabled || config.apiKey.isBlank()) { callback(null); return }
+        if (!config.enabled) { callback(null); return }
+        if (config.apiKey.isBlank()) { onLog("🤖 AI: 未配置API Key"); callback(null); return }
 
         val prompt = buildPostAlertPrompt(alertText, snapshots, shanghaiIndex, sentiment, stockSector, context)
-        if (prompt.isEmpty()) { callback(null); return }
+        if (prompt.isEmpty()) { onLog("🤖 AI: 异动复盘数据不足"); callback(null); return }
 
         val postAlertPrompt = buildString {
             append("刚发生异动需要复盘。")

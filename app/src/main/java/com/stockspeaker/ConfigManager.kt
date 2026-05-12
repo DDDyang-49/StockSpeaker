@@ -13,7 +13,8 @@ data class AiProviderInfo(
 )
 
 val AI_PROVIDERS = listOf(
-    AiProviderInfo("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-v4-flash", "deepseek-reasoner"),
+    AiProviderInfo("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat", "deepseek-reasoner"),
+    AiProviderInfo("glm", "智谱GLM", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4-flash", "glm-4-plus"),
     AiProviderInfo("edgefn", "EdgeFn", "https://api.edgefn.net/v1/chat/completions", "Qwen3-235B-A22B-2507")
 )
 

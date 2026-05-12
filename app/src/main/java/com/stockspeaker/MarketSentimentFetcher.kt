@@ -25,7 +25,7 @@ data class GlobalSentiment(
 
     /** 拼接为精简情绪切片，注入 AI Prompt */
     fun toSentimentSlice(): String = buildString {
-        if (limitUpCount > 0 || limitDownCount > 0) {
+        if (upCount > 0 || downCount > 0 || limitUpCount > 0 || limitDownCount > 0) {
             val parts = mutableListOf<String>()
             if (limitUpCount > 0) parts.add("涨停${limitUpCount}家")
             if (limitDownCount > 0) parts.add("跌停${limitDownCount}家")
