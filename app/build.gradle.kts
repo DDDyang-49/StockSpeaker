@@ -11,8 +11,8 @@ android {
         applicationId = "com.stockspeaker"
         minSdk = 26
         targetSdk = 34
-        versionCode = 21
-        versionName = "1.0.13"
+        versionCode = 22
+        versionName = "1.0.14"
     }
 
     buildTypes {

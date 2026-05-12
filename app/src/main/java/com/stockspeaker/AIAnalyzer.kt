@@ -31,7 +31,8 @@ enum class PatternType {
     SPEED_ALERT,       // 涨速异动
     SHARP_REVERSAL,    // 高位急转
     FAKE_BULL,         // 诱多：买单凶猛但价格滞涨
-    SILENT_DROP        // 无量空跌：缩量阴跌无承接
+    SILENT_DROP,        // 无量空跌：缩量阴跌无承接
+    ANTS_PULL_UP        // 蚂蚁搬家：中小单连续扫货点火
 }
 
 data class Pattern(
@@ -51,9 +52,9 @@ data class StanceResult(
 data class AiConfig(
     val enabled: Boolean = false,
     val apiKey: String = "",
-    val apiUrl: String = "https://api.deepseek.com/v1/chat/completions",
-    val model: String = "deepseek-v4-flash",
-    val thinkingModel: String = "deepseek-reasoner",
+    val apiUrl: String = "https://api.edgefn.net/v1/chat/completions",
+    val model: String = "Qwen3-235B-A22B-2507",
+    val thinkingModel: String = "",
     val summaryInterval: Int = 5
 )
 
@@ -189,6 +190,23 @@ class AIAnalyzer(
             if (cumChange <= dropThreshold && snapshot.volRatio < 0.8 && snapshot.largeBidsCount == 0) {
                 patterns.add(Pattern(PatternType.SILENT_DROP,
                     "警报！下方买盘真空，连续缩量阴跌，谨防资金踩踏。"))
+            }
+        }
+
+        // ═══════════════════════════════════════
+        // 6. 蚂蚁搬家拉升 (ANTS_PULL_UP) —— 中小单连续点火
+        // ═══════════════════════════════════════
+        if (recentData.size >= 10) {
+            val last10 = recentData.takeLast(10)
+            val cumChange = (snapshot.price - last10.first().price) / last10.first().price * 100.0
+            val antThreshold = if (isHot) 1.8 else 1.2
+            var bidIncreaseSnapshots = 0
+            for (i in 1 until last10.size) {
+                if (last10[i].largeBidsCount > last10[i - 1].largeBidsCount) bidIncreaseSnapshots++
+            }
+            if (cumChange >= antThreshold && bidIncreaseSnapshots < 2) {
+                patterns.add(Pattern(PatternType.ANTS_PULL_UP,
+                    "注意！多笔中小单连续扫货点火，20秒内区间拉升超${String.format("%.1f", cumChange)}%，准备做T！"))
             }
         }
 
@@ -376,9 +394,7 @@ class AIAnalyzer(
                 |  "messages": [
                 |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
                 |    {"role": "user", "content": ${toJsonStr(prompt)}}
-                |  ],
-                |  "max_tokens": 60,
-                |  "temperature": 0.3
+                |  ]
                 |}
             """.trimMargin()
 
@@ -391,7 +407,11 @@ class AIAnalyzer(
 
             val response = httpClient.newCall(request).execute()
             val body = response.body?.string()
-            if (!response.isSuccessful) { onLog("双AI HTTP ${response.code} ${body?.take(80) ?: ""}"); return null }
+            if (!response.isSuccessful) {
+                if (response.code == 403) onLog("✗ HTTP 403: API Key无权访问该模型，请检查设置。")
+                else onLog("双AI HTTP ${response.code} ${body?.take(80) ?: ""}")
+                return null
+            }
 
             val content = extractContent(body)
             if (content != null) parseStanceResult(content) else null
@@ -563,6 +583,8 @@ class AIAnalyzer(
         val changeStr = if (latest.changePct > 0) "+${latest.changePct}%" else "${latest.changePct}%"
 
         return buildString {
+            // 题材标签
+            if (context.stockSector.isNotBlank()) append("该股当前核心炒作题材为：【${context.stockSector}】。")
             // 全局情绪切片放在最开头，赋予 AI 上帝视角
             val slice = sentiment.toSentimentSlice()
             if (slice.isNotBlank()) append("$slice ")
@@ -578,13 +600,14 @@ class AIAnalyzer(
             if (context.fundFlow.isNotBlank()) append("资金：${context.fundFlow}${context.fundFlowAmount}。")
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
             if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
+            if (context.stockSector.isNotBlank()) append("必须结合它所属的题材，判断该股走势是否与大盘情绪产生背离。")
             append("从以上数据中挑最值得说的1-2个关键信号，用2-4句口语点评。")
             append("优先关注量价背离、盘口异动、变盘信号、相对强弱。像老股民跟朋友聊盘面，直接说出判断。不超过80字。")
         }
     }
 
     /** 异动后的专用深度分析提示词 */
-    fun buildPostAlertPrompt(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment()): String {
+    fun buildPostAlertPrompt(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), stockSector: String = ""): String {
         if (snapshots.isEmpty()) return ""
         val latest = snapshots.last()
         val trend = if (snapshots.size >= 2) {
@@ -593,6 +616,7 @@ class AIAnalyzer(
         } else "波动"
 
         return buildString {
+            if (stockSector.isNotBlank()) append("该股当前核心炒作题材为：【${stockSector}】。")
             val slice = sentiment.toSentimentSlice()
             if (slice.isNotBlank()) append("$slice ")
             append("刚发生异动：${alertText.take(60)}。")
@@ -602,6 +626,7 @@ class AIAnalyzer(
             if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
             if (lastStance != null) append("你上次判断为【${lastStance}】，请结合最新数据判断是否修正观点。")
             append("分析这波异动可能是什么意图？后续走势怎么看？")
+            if (stockSector.isNotBlank()) append("必须结合它所属的题材，判断该股走势是否与大盘情绪产生背离。")
             append("用2-3句口语点评，像老股民复盘异动，不超过60字。")
         }
     }
@@ -627,9 +652,7 @@ class AIAnalyzer(
                     |  "messages": [
                     |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
                     |    {"role": "user", "content": ${toJsonStr(userPrompt)}}
-                    |  ],
-                    |  "max_tokens": 80,
-                    |  "temperature": 0.2
+                    |  ]
                     |}
                 """.trimMargin()
 
@@ -643,6 +666,7 @@ class AIAnalyzer(
                 val response = httpClient.newCall(request).execute()
                 val body = response.body?.string()
                 if (!response.isSuccessful) {
+                    if (response.code == 403) onLog("✗ HTTP 403: API Key无权访问该模型，请检查设置。")
                     callback(listOf(fullText)); return@execute
                 }
                 val content = extractContent(body) ?: run { callback(listOf(fullText)); return@execute }
@@ -682,9 +706,7 @@ class AIAnalyzer(
                     |  "messages": [
                     |    {"role": "system", "content": ${toJsonStr(FIXED_PERSONA)}},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
-                    |  ],
-                    |  "max_tokens": 120,
-                    |  "temperature": 0.8
+                    |  ]
                     |}
                 """.trimMargin()
 
@@ -698,7 +720,8 @@ class AIAnalyzer(
                 val response = httpClient.newCall(request).execute()
                 val body = response.body?.string()
                 if (!response.isSuccessful) {
-                    onLog("🤖 AI: ✗ HTTP ${response.code} ${body?.take(60) ?: ""}")
+                    if (response.code == 403) onLog("🤖 AI: ✗ HTTP 403: API Key无权访问该模型，请检查设置。")
+                    else onLog("🤖 AI: ✗ HTTP ${response.code} ${body?.take(60) ?: ""}")
                     callback(null)
                     return@execute
                 }
@@ -718,14 +741,14 @@ class AIAnalyzer(
     }
 
     /** 异动后专用AI分析（独立prompt，强调异动背景+全市场情绪） */
-    fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), callback: (String?) -> Unit) {
+    fun generatePostAlertAnalysis(alertText: String, snapshots: List<MarketSnapshot>, shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment(), stockSector: String = "", callback: (String?) -> Unit) {
         val config = aiConfigProvider()
         if (!config.enabled || config.apiKey.isBlank()) {
             callback(null)
             return
         }
 
-        val prompt = buildPostAlertPrompt(alertText, snapshots, shanghaiIndex, sentiment)
+        val prompt = buildPostAlertPrompt(alertText, snapshots, shanghaiIndex, sentiment, stockSector)
         if (prompt.isEmpty()) { callback(null); return }
 
         val postAlertPrompt = buildString {
@@ -743,9 +766,7 @@ class AIAnalyzer(
                     |  "messages": [
                     |    {"role": "system", "content": ${toJsonStr(postAlertPrompt)}},
                     |    {"role": "user", "content": ${toJsonStr(prompt)}}
-                    |  ],
-                    |  "max_tokens": 80,
-                    |  "temperature": 0.8
+                    |  ]
                     |}
                 """.trimMargin()
 
@@ -759,7 +780,8 @@ class AIAnalyzer(
                 val response = httpClient.newCall(request).execute()
                 val body = response.body?.string()
                 if (!response.isSuccessful) {
-                    onLog("🤖 AI: ✗ HTTP ${response.code} ${body?.take(80) ?: ""}")
+                    if (response.code == 403) onLog("🤖 AI: ✗ HTTP 403: API Key无权访问该模型，请检查设置。")
+                    else onLog("🤖 AI: ✗ HTTP ${response.code} ${body?.take(80) ?: ""}")
                     callback(null); return@execute
                 }
                 val content = extractContent(body)

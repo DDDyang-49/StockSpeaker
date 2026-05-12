@@ -100,10 +100,15 @@ object MarketSentimentFetcher {
             val body = resp.body?.string() ?: return Quadruple(0, 0, 0, 0)
             val json = JSONObject(body)
             val data = json.optJSONObject("data") ?: return Quadruple(0, 0, 0, 0)
-            val up = data.optInt("f47", 0)
-            val down = data.optInt("f48", 0)
-            val limitUp = data.optInt("f50", 0)
-            val limitDown = data.optInt("f51", 0)
+            val SENTINEL = 2147483647  // 东方财富脏数据标记值
+            var up = data.optInt("f47", 0)
+            var down = data.optInt("f48", 0)
+            var limitUp = data.optInt("f50", 0)
+            var limitDown = data.optInt("f51", 0)
+            if (up == SENTINEL) up = 0
+            if (down == SENTINEL) down = 0
+            if (limitUp == SENTINEL) limitUp = 0
+            if (limitDown == SENTINEL) limitDown = 0
             if (up == 0 && down == 0) return Quadruple(0, 0, 0, 0)
             return Quadruple(up, down, limitUp, limitDown)
         } catch (_: Exception) {
@@ -144,9 +149,8 @@ object MarketSentimentFetcher {
 
     private fun fetchTopStock(): Pair<String, Int> {
         try {
-            // 尝试东方财富"连续涨停"概念成分股，按连板数排序
             val url = "https://push2.eastmoney.com/api/qt/clist/get?" +
-                    "pn=1&pz=3&po=1&np=1&fields=f14,f12,f3,f8&fid=f8&fs=b:MK0354"
+                    "pn=1&pz=15&po=1&np=1&fields=f14,f12,f3,f8&fid=f8&fs=b:MK0354"
             val req = Request.Builder().url(url)
                 .header("Referer", "https://quote.eastmoney.com/")
                 .build()
@@ -155,12 +159,17 @@ object MarketSentimentFetcher {
             val json = JSONObject(body)
             val data = json.optJSONObject("data")
             val diffs = data?.optJSONArray("diff") ?: return Pair("", 0)
-            if (diffs.length() == 0) return Pair("", 0)
-            val item = diffs.optJSONObject(0)
-            val name = item?.optString("f14", "") ?: ""
-            val boards = item?.optInt("f8", 0) ?: 0
-            if (name.isBlank() || boards == 0) return Pair("", 0)
-            return Pair(name, boards)
+            val badWords = listOf("转债", "ST", "退", "N")
+            for (i in 0 until diffs.length()) {
+                val item = diffs.optJSONObject(i) ?: continue
+                val name = item.optString("f14", "")
+                if (name.isBlank()) continue
+                if (badWords.any { it in name }) continue
+                val boards = item.optInt("f8", 0)
+                if (boards == 2147483647 || boards == 0) continue
+                return Pair(name, boards)
+            }
+            return Pair("", 0)
         } catch (_: Exception) {
             return Pair("", 0)
         }

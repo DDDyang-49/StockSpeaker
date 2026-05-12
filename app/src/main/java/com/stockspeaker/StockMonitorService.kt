@@ -4,6 +4,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
@@ -43,7 +44,9 @@ class StockMonitorService : Service() {
     }
 
     private lateinit var config: AppConfig
-    private lateinit var handler: Handler
+    private lateinit var uiHandler: Handler
+    private lateinit var loopThread: HandlerThread
+    private lateinit var loopHandler: Handler
     private lateinit var ttsEngine: TtsEngine
     private lateinit var aiAnalyzer: AIAnalyzer
     private var wakeLock: PowerManager.WakeLock? = null
@@ -75,6 +78,7 @@ class StockMonitorService : Service() {
     private var lastAlertText = ""
     private var lastPostAlertData: StockData? = null
     private val batchQueue = mutableListOf<String>()
+    private val priceHistory = ArrayDeque<Double>(15)  // 滑动窗口价格轨迹（~30秒）
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private val netExecutor = Executors.newSingleThreadExecutor()
     private val sentimentExecutor = Executors.newSingleThreadExecutor()  // 情绪抓取独立线程，不阻塞行情轮询
@@ -87,7 +91,7 @@ class StockMonitorService : Service() {
 
     private fun aiLog(msg: String) {
         val line = "[${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())}] $msg"
-        handler.post {
+        uiHandler.post {
             aiLogs.add(line)
             if (aiLogs.size > 100) aiLogs.removeAt(0)
             uiState.value = uiState.value.copy(statusText = line.take(80), aiLog = aiLogs.toList())
@@ -96,7 +100,9 @@ class StockMonitorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        handler = Handler(Looper.getMainLooper())
+        uiHandler = Handler(Looper.getMainLooper())
+        loopThread = HandlerThread("StockLoop").apply { start() }
+        loopHandler = Handler(loopThread.looper)
         NotificationHelper.createChannel(this)
         val cm = ConfigManager(this)
         config = cm.load()
@@ -144,7 +150,7 @@ class StockMonitorService : Service() {
         }
         if (isRunning) return START_STICKY
         isRunning = true
-        try { wakeLock?.acquire() } catch (_: Exception) {}
+        try { wakeLock?.acquire(10000) } catch (_: Exception) {}
         val cm = ConfigManager(this); config = cm.load()
         cm.setMonitoringActive(true)
         lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; lastPrice = 0.0; lastSpokenPrice = 0.0; lastAlertHand = 0; intervalLargeEvents.clear()
@@ -156,6 +162,7 @@ class StockMonitorService : Service() {
         lastShanghaiIndex = ""; shanghaiFetchCount = 0
         globalSentiment = GlobalSentiment(); lastSentimentFetchTime = 0L
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
+        priceHistory.clear()
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.build(this, config.stockCode))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
         runLoop()
@@ -165,7 +172,8 @@ class StockMonitorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        isRunning = false; handler.removeCallbacksAndMessages(null)
+        isRunning = false; uiHandler.removeCallbacksAndMessages(null)
+        loopHandler.removeCallbacksAndMessages(null); loopThread.quitSafely()
         ttsEngine.shutdown(); aiAnalyzer.shutdown()
         netExecutor.shutdownNow(); sentimentExecutor.shutdownNow()
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
@@ -200,23 +208,30 @@ class StockMonitorService : Service() {
                         val s = MarketSentimentFetcher.fetchAll()
                         if (!s.isEmpty) {
                             globalSentiment = s
-                            handler.post { aiLog("情绪: ${s.toSentimentSlice().take(60)}") }
+                            uiHandler.post { aiLog("情绪: ${s.toSentimentSlice().take(60)}") }
                         }
                     } catch (_: Exception) {}
                 }
             }
-            handler.post {
+            uiHandler.post {
                 if (!isRunning) return@post
-                // WakeLock 在 onStartCommand 中永久持有，此处不再重复 acquire
                 if (data != null) { processStockData(data); updateNotif(data) }
-                handler.postDelayed({ runLoop() }, 2000)
+                // 防御性重申请 WakeLock（部分ROM息屏后偷偷释放，每次循环10秒超时）
+                try { wakeLock?.let { if (!it.isHeld) it.acquire(10000) } } catch (_: Exception) {}
+                // 用后台HandlerThread定时，不受Doze主线程挂起影响
+                loopHandler.postDelayed({ runLoop() }, 2000)
             }
         }
     }
 
     private fun processStockData(data: StockData) {
         val currentHand = if (lastTotalVol > 0) maxOf(0, data.totalVol - lastTotalVol) else 0
-        val speed = if (lastChangePct != 0.0) Math.round((data.changePct - lastChangePct) * 100.0) / 100.0 else 0.0
+        // 滑动窗口区间涨速：用~30秒价格轨迹计算真实区间涨幅，捕捉蚂蚁搬家式连续点火
+        priceHistory.addLast(data.price)
+        if (priceHistory.size > 15) priceHistory.removeFirst()
+        val speed = if (priceHistory.size >= 2 && priceHistory.first() > 0) {
+            Math.round((data.price - priceHistory.first()) / priceHistory.first() * 10000.0) / 100.0
+        } else 0.0
         val prevPrice = lastPrice
         lastTotalVol = data.totalVol; lastChangePct = data.changePct; lastPrice = data.price
         val dynThreshold = getDynamicThreshold(data.turnover, data.volRatio)
@@ -262,11 +277,7 @@ class StockMonitorService : Service() {
         val timePassed = now - lastHandAlertTime >= alertCooldownMs
         val isBiggerOrder = lastAlertHand > 0 && currentHand >= (lastAlertHand * 1.5)
         if (currentHand >= dynThreshold && (timePassed || isBiggerOrder)) {
-            val (dirLabel, action) = when {
-                prevPrice > 0 && data.price > prevPrice -> "大单" to "向上扫货"
-                prevPrice > 0 && data.price < prevPrice -> "大单" to "向下砸盘"
-                else -> "大单" to "激烈成交"
-            }
+            val (dirLabel, action) = describeDirection(prevPrice, data.price)
             alertText = "${alertPrefix()}${spokenHand(currentHand)}${dirLabel}${action}！"
             ttsEngine.speakAlert(alertText)
             alertSpoken = true; lastHandAlertTime = now; lastAlertSpeakTime = now
@@ -313,11 +324,7 @@ class StockMonitorService : Service() {
                 alertSettleCount = 0
                 if (now - lastAlertSpeakTime >= 8000) {
                     val update = if (stillAlertHand) {
-                        val (dl, act) = when {
-                            prevPrice > 0 && data.price > prevPrice -> "大单" to "向上扫货"
-                            prevPrice > 0 && data.price < prevPrice -> "大单" to "向下砸盘"
-                            else -> "大单" to "激烈成交"
-                        }
+                        val (dl, act) = describeDirection(prevPrice, data.price)
                         "${alertPrefix()}${spokenHand(currentHand)}${dl}${act}！"
                     } else {
                         val dir = if (speed > 0) "继续拉升" else "继续下跌"
@@ -354,12 +361,8 @@ class StockMonitorService : Service() {
 
         // ── 收集时段内大单 ──
         if (currentHand >= dynThreshold) {
-            val act = when {
-                prevPrice > 0 && data.price > prevPrice -> "向上扫货"
-                prevPrice > 0 && data.price < prevPrice -> "向下砸盘"
-                else -> "激烈成交"
-            }
-            intervalLargeEvents.add(Triple(nowStr, act, currentHand))
+            val (_, action) = describeDirection(prevPrice, data.price)
+            intervalLargeEvents.add(Triple(nowStr, action, currentHand))
         }
 
         // ═══════════════════════════════════════
@@ -436,16 +439,17 @@ class StockMonitorService : Service() {
             newsHeadline = aiAnalyzer.pickNews(config.stockCode),
             fundFlow = if (data.changePct > 0) "主力净流入" else "主力净流出",
             fundFlowAmount = "${"%.1f".format(Math.abs(data.changePct) * 1.5)}亿",
-            alertStats = ""
+            alertStats = "",
+            stockSector = config.stockSector
         )
         aiAnalyzer.generateSummary(ctx, lastShanghaiIndex, globalSentiment) { summary ->
             aiRequestInFlight = false
-            if (summary != null) handler.post {
+            if (summary != null) uiHandler.post {
                 aiLog("AI点评: ${summary.take(30)}...")
                 if (summary.length > 60) {
                     // 长文本 → 辅AI拆分为短句分批播报
                     aiAnalyzer.splitIntoBatches(summary) { batches ->
-                        handler.post {
+                        uiHandler.post {
                             batchQueue.addAll(batches)
                             if (!ttsEngine.isSpeaking && batchQueue.isNotEmpty()) {
                                 val next = batchQueue.removeAt(0)
@@ -471,9 +475,9 @@ class StockMonitorService : Service() {
         aiRequestInFlight = true
         val snapshots = aiAnalyzer.getRecentSnapshots()
         val alertText = lastAlertText
-        aiAnalyzer.generatePostAlertAnalysis(alertText, snapshots, lastShanghaiIndex, globalSentiment) { result ->
+        aiAnalyzer.generatePostAlertAnalysis(alertText, snapshots, lastShanghaiIndex, globalSentiment, config.stockSector) { result ->
             aiRequestInFlight = false
-            if (result != null) handler.post {
+            if (result != null) uiHandler.post {
                 aiLog("异动复盘: ${result.take(30)}...")
                 if (!ttsEngine.isSpeaking) {
                     ttsEngine.speak(result)
@@ -498,7 +502,7 @@ class StockMonitorService : Service() {
                 globalSentiment = globalSentiment
             ) { text ->
                 aiRequestInFlight = false
-                if (text != null) handler.post {
+                if (text != null) uiHandler.post {
                     aiLog("双AI: ${text.take(30)}...")
                     if (!ttsEngine.isSpeaking) {
                         ttsEngine.speak(text)
@@ -529,6 +533,14 @@ class StockMonitorService : Service() {
         } else ""
         val full = main + alert + event + detail
         return if (full == "。") null else full
+    }
+
+    // ── 大单方向判断（必须用当前价vs上一秒价，严禁用changePct） ──
+
+    private fun describeDirection(prevPrice: Double, price: Double): Pair<String, String> = when {
+        prevPrice > 0 && price > prevPrice -> "大单" to "向上扫货"
+        prevPrice > 0 && price < prevPrice -> "大单" to "向下砸盘"
+        else -> "大单" to "激烈成交"
     }
 
     // ── 异动前缀（随机切换，确保异动播报有辨识度） ──

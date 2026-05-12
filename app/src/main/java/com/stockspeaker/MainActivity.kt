@@ -120,11 +120,13 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     var transactionOpt by remember { mutableStateOf(cfg.speakTransactionDetail) }
     var aiEnabled by remember { mutableStateOf(cfg.aiEnabled) }
     var aiProvider by remember { mutableStateOf(cfg.aiProvider) }
+    var aiModel by remember { mutableStateOf(cfg.aiModel) }
     var aiKey by remember { mutableStateOf(cfg.aiApiKey) }
     var aiInterval by remember { mutableStateOf(cfg.aiSummaryInterval.toString()) }
     var showKey by remember { mutableStateOf(false) }
     var aiTwoEnabled by remember { mutableStateOf(cfg.aiTwoEnabled) }
     var aiTwoProvider by remember { mutableStateOf(cfg.aiTwoProvider) }
+    var aiTwoModel by remember { mutableStateOf(cfg.aiTwoModel) }
     var aiTwoKey by remember { mutableStateOf(cfg.aiTwoApiKey) }
     var showKey2 by remember { mutableStateOf(false) }
     var aiKeyNote by remember {
@@ -135,6 +137,7 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
         val entry = configManager.getApiKeyHistory().find { it.key == cfg.aiTwoApiKey }
         mutableStateOf(entry?.note ?: "")
     }
+    var stockSector by remember { mutableStateOf(cfg.stockSector) }
     var selectedTab by remember { mutableStateOf(0) }
 
     val state by StockMonitorService.uiState.collectAsState()
@@ -154,13 +157,14 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
             speakLargeOrders = largeOrderOpt,
             speakTransactionDetail = transactionOpt,
             aiEnabled = aiEnabled, aiApiKey = aiKey.trim(),
-            aiProvider = aiProvider, aiApiUrl = pi.url, aiModel = pi.model,
+            aiProvider = aiProvider, aiApiUrl = pi.url, aiModel = aiModel.trim().ifBlank { pi.model },
             aiThinkingModel = pi.thinkingModel,
             aiSummaryInterval = aiInterval.toIntOrNull() ?: 5,
             aiTwoEnabled = aiTwoEnabled, aiTwoApiKey = twoKey,
-            aiTwoProvider = aiTwoProvider, aiTwoApiUrl = pi2.url, aiTwoModel = pi2.model,
+            aiTwoProvider = aiTwoProvider, aiTwoApiUrl = pi2.url, aiTwoModel = aiTwoModel.trim().ifBlank { pi2.model },
             aiTwoThinkingModel = pi2.thinkingModel,
-            monitoringActive = true
+            monitoringActive = true,
+            stockSector = stockSector.trim()
         )
     }
 
@@ -220,11 +224,15 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                 volRatioOpt, { volRatioOpt = it }, handOpt, { handOpt = it },
                 largeOrderOpt, { largeOrderOpt = it }, transactionOpt, { transactionOpt = it },
                 aiEnabled, { aiEnabled = it }, aiProvider, { aiProvider = it },
+                aiModel, { aiModel = it },
                 aiKey, { aiKey = it }, aiInterval, { aiInterval = it },
                 showKey, { showKey = it }, aiTwoEnabled, { aiTwoEnabled = it },
-                aiTwoProvider, { aiTwoProvider = it }, aiTwoKey, { aiTwoKey = it },
+                aiTwoProvider, { aiTwoProvider = it },
+                aiTwoModel, { aiTwoModel = it },
+                aiTwoKey, { aiTwoKey = it },
                 showKey2, { showKey2 = it }, aiKeyNote, { aiKeyNote = it },
-                aiTwoKeyNote, { aiTwoKeyNote = it }, { buildConfig() }, configManager)
+                aiTwoKeyNote, { aiTwoKeyNote = it }, stockSector, { stockSector = it },
+                { buildConfig() }, configManager)
         }
     }
 }
@@ -349,15 +357,18 @@ private fun SettingsTab(
     transactionOpt: Boolean, onTransaction: (Boolean) -> Unit,
     aiEnabled: Boolean, onAi: (Boolean) -> Unit,
     aiProvider: String, onAiProvider: (String) -> Unit,
+    aiModel: String, onAiModel: (String) -> Unit,
     aiKey: String, onAiKey: (String) -> Unit,
     aiInterval: String, onAiInterval: (String) -> Unit,
     showKey: Boolean, onShowKey: (Boolean) -> Unit,
     aiTwoEnabled: Boolean, onAiTwo: (Boolean) -> Unit,
     aiTwoProvider: String, onAiTwoProvider: (String) -> Unit,
+    aiTwoModel: String, onAiTwoModel: (String) -> Unit,
     aiTwoKey: String, onAiTwoKey: (String) -> Unit,
     showKey2: Boolean, onShowKey2: (Boolean) -> Unit,
     aiKeyNote: String, onAiKeyNote: (String) -> Unit,
     aiTwoKeyNote: String, onAiTwoKeyNote: (String) -> Unit,
+    stockSector: String, onStockSector: (String) -> Unit,
     buildConfig: () -> AppConfig,
     configManager: ConfigManager
 ) {
@@ -399,6 +410,8 @@ private fun SettingsTab(
                 LabelField("播报间隔", value = interval, onValue = onInterval, enabled = enabled, Modifier.weight(1f), suffix = "秒")
             }
             Spacer(Modifier.height(10.dp))
+            LabelField("所属题材（选填，用于AI精准分析）", value = stockSector, onValue = onStockSector, enabled = enabled, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(10.dp))
             LabelField("大单阈值", value = threshold, onValue = onThreshold, enabled = enabled, modifier = Modifier.fillMaxWidth(), suffix = "手")
         }
         Spacer(Modifier.height(12.dp))
@@ -425,6 +438,8 @@ private fun SettingsTab(
                     )
                 }
             }
+            Spacer(Modifier.height(10.dp))
+            LabelField("模型名称（留空则用默认）", value = aiModel, onValue = onAiModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             // API Key + 历史下拉
             Box(Modifier.fillMaxWidth()) {
@@ -479,6 +494,8 @@ private fun SettingsTab(
                     )
                 }
             }
+            Spacer(Modifier.height(10.dp))
+            LabelField("模型名称（留空则用默认）", value = aiTwoModel, onValue = onAiTwoModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             // 辅AI Key + 历史下拉
             Box(Modifier.fillMaxWidth()) {

@@ -14,8 +14,7 @@ data class AiProviderInfo(
 
 val AI_PROVIDERS = listOf(
     AiProviderInfo("deepseek", "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-v4-flash", "deepseek-reasoner"),
-    AiProviderInfo("edgefn", "EdgeFn", "https://api.edgefn.net/v1/chat/completions", "Qwen3-235B-A22B-2507"),
-    AiProviderInfo("openai", "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini")
+    AiProviderInfo("edgefn", "EdgeFn", "https://api.edgefn.net/v1/chat/completions", "Qwen3-235B-A22B-2507")
 )
 
 data class ApiKeyEntry(val key: String, val note: String = "")
@@ -36,20 +35,21 @@ data class AppConfig(
     // AI 配置
     val aiEnabled: Boolean = false,
     val aiApiKey: String = "",
-    val aiProvider: String = "deepseek",
-    val aiApiUrl: String = "https://api.deepseek.com/v1/chat/completions",
-    val aiModel: String = "deepseek-v4-flash",
-    val aiThinkingModel: String = "deepseek-reasoner",
+    val aiProvider: String = "edgefn",
+    val aiApiUrl: String = "https://api.edgefn.net/v1/chat/completions",
+    val aiModel: String = "Qwen3-235B-A22B-2507",
+    val aiThinkingModel: String = "",
     val aiSummaryInterval: Int = 5,
     // 辅 AI 配置（资金面，可用便宜模型）
     val aiTwoEnabled: Boolean = false,
     val aiTwoApiKey: String = "",
-    val aiTwoProvider: String = "deepseek",
-    val aiTwoApiUrl: String = "https://api.deepseek.com/v1/chat/completions",
-    val aiTwoModel: String = "deepseek-v4-flash",
-    val aiTwoThinkingModel: String = "deepseek-reasoner",
+    val aiTwoProvider: String = "edgefn",
+    val aiTwoApiUrl: String = "https://api.edgefn.net/v1/chat/completions",
+    val aiTwoModel: String = "Qwen3-235B-A22B-2507",
+    val aiTwoThinkingModel: String = "",
     // 运行状态
-    val monitoringActive: Boolean = false
+    val monitoringActive: Boolean = false,
+    val stockSector: String = ""
 )
 
 class ConfigManager(context: Context) {
@@ -71,18 +71,19 @@ class ConfigManager(context: Context) {
             speakTransactionDetail = prefs.getBoolean("speak_transaction_detail", false),
             aiEnabled = prefs.getBoolean("ai_enabled", false),
             aiApiKey = prefs.getString("ai_api_key", "") ?: "",
-            aiProvider = prefs.getString("ai_provider", "deepseek") ?: "deepseek",
-            aiApiUrl = prefs.getString("ai_api_url", "https://api.deepseek.com/v1/chat/completions") ?: "https://api.deepseek.com/v1/chat/completions",
-            aiModel = prefs.getString("ai_model", "deepseek-v4-flash") ?: "deepseek-v4-flash",
-            aiThinkingModel = prefs.getString("ai_thinking_model", "deepseek-reasoner") ?: "deepseek-reasoner",
+            aiProvider = prefs.getString("ai_provider", "edgefn") ?: "edgefn",
+            aiApiUrl = prefs.getString("ai_api_url", "https://api.edgefn.net/v1/chat/completions") ?: "https://api.edgefn.net/v1/chat/completions",
+            aiModel = prefs.getString("ai_model", "Qwen3-235B-A22B-2507") ?: "Qwen3-235B-A22B-2507",
+            aiThinkingModel = prefs.getString("ai_thinking_model", "") ?: "",
             aiSummaryInterval = prefs.getInt("ai_summary_interval", 5),
             aiTwoEnabled = prefs.getBoolean("ai_two_enabled", false),
             aiTwoApiKey = prefs.getString("ai_two_api_key", "") ?: "",
-            aiTwoProvider = prefs.getString("ai_two_provider", "deepseek") ?: "deepseek",
-            aiTwoApiUrl = prefs.getString("ai_two_api_url", "https://api.deepseek.com/v1/chat/completions") ?: "https://api.deepseek.com/v1/chat/completions",
-            aiTwoModel = prefs.getString("ai_two_model", "deepseek-v4-flash") ?: "deepseek-v4-flash",
-            aiTwoThinkingModel = prefs.getString("ai_two_thinking_model", "deepseek-reasoner") ?: "deepseek-reasoner",
-            monitoringActive = prefs.getBoolean("monitoring_active", false)
+            aiTwoProvider = prefs.getString("ai_two_provider", "edgefn") ?: "edgefn",
+            aiTwoApiUrl = prefs.getString("ai_two_api_url", "https://api.edgefn.net/v1/chat/completions") ?: "https://api.edgefn.net/v1/chat/completions",
+            aiTwoModel = prefs.getString("ai_two_model", "Qwen3-235B-A22B-2507") ?: "Qwen3-235B-A22B-2507",
+            aiTwoThinkingModel = prefs.getString("ai_two_thinking_model", "") ?: "",
+            monitoringActive = prefs.getBoolean("monitoring_active", false),
+            stockSector = prefs.getString("stock_sector", "") ?: ""
         )
     }
 
@@ -114,6 +115,7 @@ class ConfigManager(context: Context) {
             .putString("ai_two_model", config.aiTwoModel)
             .putString("ai_two_thinking_model", config.aiTwoThinkingModel)
             .putBoolean("monitoring_active", config.monitoringActive)
+            .putString("stock_sector", config.stockSector)
             .apply()
     }
 

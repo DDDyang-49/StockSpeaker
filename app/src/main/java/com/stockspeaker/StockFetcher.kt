@@ -43,44 +43,13 @@ data class StockData(
 // ── 行情背景数据（消息面+资金流向，暂无免费API时使用Mock） ──
 
 data class MarketContext(
-    val newsSentiment: String = "中性",      // 利好/利空/中性
-    val newsHeadline: String = "",            // 最新相关新闻标题
-    val fundFlow: String = "主力净流入",      // 主力/散户/游资
-    val fundFlowAmount: String = "0亿",       // 净流入金额
-    val alertStats: String = ""               // 本时段异动统计（由外部传入）
+    val newsSentiment: String = "中性",
+    val newsHeadline: String = "",
+    val fundFlow: String = "主力净流入",
+    val fundFlowAmount: String = "0亿",
+    val alertStats: String = "",
+    val stockSector: String = ""
 )
-
-// ── 模拟数据生成（可根据股票代码和时段生成不同的假数据） ──
-
-private val mockNewsPool = listOf(
-    "板块轮动加速，资金高低切换明显",
-    "北向资金今日净买入，权重股获青睐",
-    "行业政策面利好频出，市场情绪回暖",
-    "量能持续萎缩，短线博弈加剧",
-    "大单资金午后异动，游资活跃度提升",
-    "主力资金净流入板块龙头，跟风盘增多",
-    "市场分歧加大，多空博弈激烈",
-    "外围市场走强，情绪传导至A股"
-)
-
-fun generateMockContext(code: String, changePct: Double): MarketContext {
-    val sentiment = when {
-        changePct > 2.0 -> "利好"
-        changePct < -2.0 -> "利空"
-        else -> "中性"
-    }
-    val fundDir = if (changePct > 0) "主力净流入" else "主力净流出"
-    val amount = if (changePct > 0) "${"%.1f".format(Math.abs(changePct) * 1.5)}亿" else "${"%.1f".format(Math.abs(changePct) * 1.2)}亿"
-    val newsIdx = code.hashCode().ushr(16) % mockNewsPool.size
-    val headline = mockNewsPool[(newsIdx + (System.currentTimeMillis() / 60000).toInt()) % mockNewsPool.size]
-
-    return MarketContext(
-        newsSentiment = sentiment,
-        newsHeadline = headline,
-        fundFlow = fundDir,
-        fundFlowAmount = amount
-    )
-}
 
 object StockFetcher {
     private val client = OkHttpClient.Builder()
