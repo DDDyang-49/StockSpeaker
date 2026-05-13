@@ -104,6 +104,7 @@ class StockMonitorService : Service() {
     // private var lastNotifPaused = false
     private var lastStockData: StockData? = null  // 缓存最近行情供双AI分析使用
     private var lastSpeed = 0.0
+    @Volatile private var fetchInFlight = false  // 防止Doze期间网络阻塞导致任务堆积
 
     private fun aiLog(msg: String) {
         val line = "[${timeFmt.format(Date())}] $msg"
@@ -212,68 +213,82 @@ class StockMonitorService : Service() {
 
     private fun runLoop() {
         if (!isRunning) return
+
+        // ── 必须在阻塞工作之前调度下一轮，确保定时链独立于网络请求 ──
+        // 息屏后 Doze 挂起整个进程的网络 I/O（OkHttp 超时线程也被暂停），
+        // fetch() 可能无限期阻塞。如果把 postDelayed 放在 fetch() 之后，
+        // 定时链会因网络阻塞而断裂 —— 这就是息屏停播的根因。
+        loopHandler.postDelayed({ runLoop() }, 2000)
+
+        // 防御性重申请：部分国产 ROM 会偷偷释放锁
+        try { wakeLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {}
+        try { wifiLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {}
+
+        if (fetchInFlight) return  // 上一轮网络请求仍在阻塞，跳过防止任务堆积
+        fetchInFlight = true
+
         netExecutor.execute {
-            if (!isRunning) return@execute
-            val cm = ConfigManager(this@StockMonitorService)
-            config = cm.load()
-            val data = StockFetcher.fetch(config.stockCode, config.largeOrderThreshold)
-            // 每10次轮询（20秒）拉一次大盘数据
-            shanghaiFetchCount++
-            if (shanghaiFetchCount % 10 == 1) {
-                lastShanghaiIndex = StockFetcher.fetchShanghaiIndexText()
-            }
-            // 每5分钟拉一次全市场情绪（异步，不阻塞主轮询）
-            val sentimentNow = System.currentTimeMillis()
-            if (sentimentNow - lastSentimentFetchTime >= 300000) {
-                lastSentimentFetchTime = sentimentNow
-                sentimentExecutor.execute {
-                    try {
-                        val s = MarketSentimentFetcher.fetchAll()
-                        if (!s.isEmpty) globalSentiment = s
-                        val slice = s.toSentimentSlice()
-                        val flash = s.toFlashNewsBlock()
-                        uiHandler.post {
-                            when {
-                                slice.isNotBlank() -> aiLog("情绪: ${slice.take(60)}")
-                                flash.isNotBlank() -> aiLog(flash.take(100))
-                                !s.isEmpty -> aiLog("情绪: 数据已更新")
-                                else -> aiLog("情绪: 暂无数据（非交易时段）")
+            if (!isRunning) { fetchInFlight = false; return@execute }
+            try {
+                val cm = ConfigManager(this@StockMonitorService)
+                config = cm.load()
+                val data = StockFetcher.fetch(config.stockCode, config.largeOrderThreshold)
+                // 每10次轮询（20秒）拉一次大盘数据
+                shanghaiFetchCount++
+                if (shanghaiFetchCount % 10 == 1) {
+                    lastShanghaiIndex = StockFetcher.fetchShanghaiIndexText()
+                }
+                // 每5分钟拉一次全市场情绪（异步，不阻塞主轮询）
+                val sentimentNow = System.currentTimeMillis()
+                if (sentimentNow - lastSentimentFetchTime >= 300000) {
+                    lastSentimentFetchTime = sentimentNow
+                    sentimentExecutor.execute {
+                        try {
+                            val s = MarketSentimentFetcher.fetchAll()
+                            if (!s.isEmpty) globalSentiment = s
+                            val slice = s.toSentimentSlice()
+                            val flash = s.toFlashNewsBlock()
+                            uiHandler.post {
+                                when {
+                                    slice.isNotBlank() -> aiLog("情绪: ${slice.take(60)}")
+                                    flash.isNotBlank() -> aiLog(flash.take(100))
+                                    !s.isEmpty -> aiLog("情绪: 数据已更新")
+                                    else -> aiLog("情绪: 暂无数据（非交易时段）")
+                                }
                             }
+                        } catch (_: Exception) {
+                            uiHandler.post { aiLog("情绪: 获取失败") }
                         }
-                    } catch (_: Exception) {
-                        uiHandler.post { aiLog("情绪: 获取失败") }
                     }
                 }
-            }
-            // ── v1.1.0: 新数据源拉取 ──
-            // 资金流向（每30秒）
-            if (sentimentNow - lastFundFlowFetchTime >= 30000) {
-                lastFundFlowFetchTime = sentimentNow
-                sentimentExecutor.execute {
-                    try {
-                        val ff = FundFlowFetcher.fetch(config.stockCode)
-                        if (!ff.isEmpty) fundFlowCache = ff
-                    } catch (_: Exception) {}
+                // ── v1.1.0: 新数据源拉取 ──
+                // 资金流向（每30秒）
+                if (sentimentNow - lastFundFlowFetchTime >= 30000) {
+                    lastFundFlowFetchTime = sentimentNow
+                    sentimentExecutor.execute {
+                        try {
+                            val ff = FundFlowFetcher.fetch(config.stockCode)
+                            if (!ff.isEmpty) fundFlowCache = ff
+                        } catch (_: Exception) {}
+                    }
                 }
-            }
-            // 概念板块（第一次+每5分钟）
-            if (lastConceptFetchTime == 0L || sentimentNow - lastConceptFetchTime >= 300000) {
-                lastConceptFetchTime = sentimentNow
-                sentimentExecutor.execute {
-                    try {
-                        val cb = ConceptBlockFetcher.fetch(config.stockCode)
-                        if (!cb.isEmpty) conceptBlockCache = cb
-                    } catch (_: Exception) {}
+                // 概念板块（第一次+每5分钟）
+                if (lastConceptFetchTime == 0L || sentimentNow - lastConceptFetchTime >= 300000) {
+                    lastConceptFetchTime = sentimentNow
+                    sentimentExecutor.execute {
+                        try {
+                            val cb = ConceptBlockFetcher.fetch(config.stockCode)
+                            if (!cb.isEmpty) conceptBlockCache = cb
+                        } catch (_: Exception) {}
+                    }
                 }
-            }
-            // 下一轮定时必须从后台线程调度，不能在 uiHandler.post 内
-            // —— 息屏后主线程消息队列挂起，会导致定时链断裂
-            loopHandler.postDelayed({ runLoop() }, 2000)
 
-            // processStockData 必须在主线程外执行
-            // —— 息屏后 uiHandler.post 内的代码不执行，TTS 播报整个停摆
-            if (data != null) { processStockData(data) }
-            try { wakeLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {}
+                // processStockData 必须在主线程外执行
+                // —— 息屏后 uiHandler.post 内的代码不执行，TTS 播报整个停摆
+                if (data != null) { processStockData(data) }
+            } finally {
+                fetchInFlight = false
+            }
         }
     }
 
