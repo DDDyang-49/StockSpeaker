@@ -273,7 +273,7 @@ class StockMonitorService : Service() {
             uiHandler.post {
                 if (!isRunning) return@post
                 if (data != null) { processStockData(data) }
-                try { wakeLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {} }
+                try { wakeLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {}
             }
         }
     }
