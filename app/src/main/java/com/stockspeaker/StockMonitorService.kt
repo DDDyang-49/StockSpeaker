@@ -270,11 +270,10 @@ class StockMonitorService : Service() {
             // —— 息屏后主线程消息队列挂起，会导致定时链断裂
             loopHandler.postDelayed({ runLoop() }, 2000)
 
-            uiHandler.post {
-                if (!isRunning) return@post
-                if (data != null) { processStockData(data) }
-                try { wakeLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {}
-            }
+            // processStockData 必须在主线程外执行
+            // —— 息屏后 uiHandler.post 内的代码不执行，TTS 播报整个停摆
+            if (data != null) { processStockData(data) }
+            try { wakeLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {}
         }
     }
 

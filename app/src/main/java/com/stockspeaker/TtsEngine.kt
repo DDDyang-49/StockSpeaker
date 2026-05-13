@@ -7,7 +7,7 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -34,7 +34,10 @@ class TtsEngine(
     var isReady = false; private set
     var isSpeaking = false; private set
 
-    private val handler = Handler(Looper.getMainLooper())
+    // 后台 Handler 线程：超时和回调必须在主线程外执行
+    // —— 息屏后主线程消息队列挂起，主线程 Handler 的 postDelayed 不会触发
+    private val timeoutThread = HandlerThread("TtsTimeout").apply { start() }
+    private val handler = Handler(timeoutThread.looper)
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     @Volatile private var hasAudioFocus = false
     private val netExecutor = Executors.newSingleThreadExecutor()
@@ -158,7 +161,7 @@ class TtsEngine(
         if (ok) {
             tts?.setSpeechRate(0.9f)
             tts?.setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                .setUsage(AudioAttributes.USAGE_MEDIA)  // USAGE_MEDIA 息屏后可播放，USAGE_ASSISTANT 可能被系统限制
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build())
             tts?.setOnUtteranceProgressListener(ttsListener)
@@ -258,6 +261,7 @@ class TtsEngine(
         stop()
         tts?.shutdown(); tts = null; isReady = false
         netExecutor.shutdownNow()
+        timeoutThread.quitSafely()
         try { cacheDir.listFiles()?.filter { it.name.startsWith("speak_") }?.forEach { it.delete() } } catch (_: Exception) {}
     }
 

@@ -37,8 +37,10 @@ app/src/main/java/com/stockspeaker/
 ### 息屏保活（Doze 下不能停）
 
 - 定时循环必须用后台 **HandlerThread**，Doze 模式下主线程 `Handler.postDelayed` 消息队列被挂起，必然停摆
+- **所有业务逻辑（processStockData / TTS 播报）必须在主线程外执行**——`uiHandler.post {}` 内的代码息屏后不执行，整个播报停摆
+- **TTS 超时 Handler 必须用后台线程**——主线程 Handler 的 `postDelayed` 息屏后不触发，`isSpeaking` 卡死无法重置
+- **TTS 音频属性用 `USAGE_MEDIA`**——`USAGE_ASSISTANT` 在息屏/锁屏后可能被系统限制
 - **WakeLock** 防御性重申请：每轮循环检查 `isHeld`，部分国产 ROM（小米/华为/OPPO）会偷偷释放
-- **TTS 卡死保护**：`UtteranceProgressListener.onDone` 息屏后可能永不回调，加 35 秒超时强制重置 `isSpeaking`
 - 音频焦点丢失（`AUDIOFOCUS_LOSS`）时仅重新请求 `MAY_DUCK` 共存，不中断播报——短时金融语音不应被切歌打断
 
 ### 数据防污染
