@@ -12,3 +12,6 @@
 | MEM_006 | 架构铁律 | Kotlin 原生 + TTS 零依赖 + OkHttp 3s + Foreground Service |
 | MEM_007 | Prompt注入 | 全市场情绪 + stockSector 题材标签 + 固定人设 |
 | MEM_008 | 大单方向 | price vs prevPrice 判断扫货/砸盘，禁用 changePct |
+| MEM_009 | API字段核对 | 东方财富字段编号不可信，必须 curl 验证；f104/f105≠f47/f48 |
+| MEM_010 | AI联动日志 | 提供商切换须同步更新模型名；所有 AI early return 必须有诊断日志 |
+| MEM_011 | 息屏保活+ | 补充 MEM_001：loopHandler 移出 uiHandler、WakeLock 无超时、WifiLock |

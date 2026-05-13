@@ -91,8 +91,9 @@ object MarketSentimentFetcher {
 
     private fun fetchMarketBreadth(): Quadruple<Int, Int, Int, Int> {
         try {
+            // f104=上涨家数 f105=下跌家数 f50=涨停家数 f51=跌停家数
             val url = "https://push2.eastmoney.com/api/qt/stock/get?secid=1.000001" +
-                    "&fields=f47,f48,f50,f51,f170"
+                    "&fields=f104,f105,f50,f51"
             val req = Request.Builder().url(url)
                 .header("Referer", "https://quote.eastmoney.com/")
                 .build()
@@ -100,13 +101,12 @@ object MarketSentimentFetcher {
             val body = resp.body?.string() ?: return Quadruple(0, 0, 0, 0)
             val json = JSONObject(body)
             val data = json.optJSONObject("data") ?: return Quadruple(0, 0, 0, 0)
-            // 常识边界防御：A股总数约5500只，任何>10000或<0的值都是脏数据
             fun Int.sane(): Int = if (this in 0..10000) this else 0
-            val up = data.optInt("f47", 0).sane()
-            val down = data.optInt("f48", 0).sane()
+            val up = data.optInt("f104", 0).sane()
+            val down = data.optInt("f105", 0).sane()
             val limitUp = data.optInt("f50", 0).sane()
             val limitDown = data.optInt("f51", 0).sane()
-            if (up == 0 && down == 0) return Quadruple(0, 0, 0, 0)
+            if (up == 0 && down == 0 && limitUp == 0 && limitDown == 0) return Quadruple(0, 0, 0, 0)
             return Quadruple(up, down, limitUp, limitDown)
         } catch (_: Exception) {
             return Quadruple(0, 0, 0, 0)

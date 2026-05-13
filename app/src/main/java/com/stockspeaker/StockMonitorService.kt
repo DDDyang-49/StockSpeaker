@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
+import android.net.wifi.WifiManager
 import android.os.PowerManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.text.SimpleDateFormat
@@ -50,6 +51,7 @@ class StockMonitorService : Service() {
     private lateinit var ttsEngine: TtsEngine
     private lateinit var aiAnalyzer: AIAnalyzer
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var isRunning = false
     private var isPaused = false
     private var lastSpeakTime = 0L
@@ -135,6 +137,10 @@ class StockMonitorService : Service() {
                 setReferenceCounted(false)
             }
         } catch (_: Exception) { null }
+        wifiLock = try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "StockSpeaker:wifi")
+        } catch (_: Exception) { null }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -155,7 +161,8 @@ class StockMonitorService : Service() {
         */
         if (isRunning) return START_STICKY
         isRunning = true
-        try { wakeLock?.acquire(10000) } catch (_: Exception) {}
+        try { wakeLock?.acquire() } catch (_: Exception) {}
+        try { wifiLock?.acquire() } catch (_: Exception) {}
         val cm = ConfigManager(this); config = cm.load()
         cm.setMonitoringActive(true)
         lastSpeakTime = 0L; lastTotalVol = 0; lastChangePct = 0.0; lastPrice = 0.0; lastSpokenPrice = 0.0; lastAlertHand = 0; intervalLargeEvents.clear()
@@ -192,6 +199,7 @@ class StockMonitorService : Service() {
         ttsEngine.shutdown(); aiAnalyzer.shutdown()
         netExecutor.shutdownNow(); sentimentExecutor.shutdownNow()
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
+        try { wifiLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
         val wasActive = ConfigManager(this).load().monitoringActive
         if (wasActive) {
             uiState.value = uiState.value.copy(isRunning = false, statusText = "监控中断，返回App自动恢复")
@@ -221,11 +229,20 @@ class StockMonitorService : Service() {
                 sentimentExecutor.execute {
                     try {
                         val s = MarketSentimentFetcher.fetchAll()
-                        if (!s.isEmpty) {
-                            globalSentiment = s
-                            uiHandler.post { aiLog("情绪: ${s.toSentimentSlice().take(60)}") }
+                        if (!s.isEmpty) globalSentiment = s
+                        val slice = s.toSentimentSlice()
+                        val flash = s.toFlashNewsBlock()
+                        uiHandler.post {
+                            when {
+                                slice.isNotBlank() -> aiLog("情绪: ${slice.take(60)}")
+                                flash.isNotBlank() -> aiLog(flash.take(100))
+                                !s.isEmpty -> aiLog("情绪: 数据已更新")
+                                else -> aiLog("情绪: 暂无数据（非交易时段）")
+                            }
                         }
-                    } catch (_: Exception) {}
+                    } catch (_: Exception) {
+                        uiHandler.post { aiLog("情绪: 获取失败") }
+                    }
                 }
             }
             // ── v1.1.0: 新数据源拉取 ──
@@ -249,13 +266,14 @@ class StockMonitorService : Service() {
                     } catch (_: Exception) {}
                 }
             }
+            // 下一轮定时必须从后台线程调度，不能在 uiHandler.post 内
+            // —— 息屏后主线程消息队列挂起，会导致定时链断裂
+            loopHandler.postDelayed({ runLoop() }, 2000)
+
             uiHandler.post {
                 if (!isRunning) return@post
-                if (data != null) { processStockData(data) /* updateNotif 暂禁用 */ }
-                // 防御性重申请 WakeLock（部分ROM息屏后偷偷释放，每次循环10秒超时）
-                try { wakeLock?.let { if (!it.isHeld) it.acquire(10000) } } catch (_: Exception) {}
-                // 用后台HandlerThread定时，不受Doze主线程挂起影响
-                loopHandler.postDelayed({ runLoop() }, 2000)
+                if (data != null) { processStockData(data) }
+                try { wakeLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {} }
             }
         }
     }
@@ -585,6 +603,7 @@ class StockMonitorService : Service() {
     private fun triggerDualAnalysis() {
         if (aiRequestInFlight) return
         aiRequestInFlight = true
+        aiLog("双AI: 启动分析...")
         netExecutor.execute {
             val history = StockFetcher.fetchDailyHistoryText(config.stockCode)
             val index = StockFetcher.fetchShanghaiIndexText()

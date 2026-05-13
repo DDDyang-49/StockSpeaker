@@ -319,9 +319,11 @@ class AIAnalyzer(
     ) {
         val configA = aiConfigProvider()
         val configB = aiTwoConfigProvider()
-        if (!configA.enabled || configA.apiKey.isBlank()) { callback(null); return }
+        if (!configA.enabled) { callback(null); return }
+        if (configA.apiKey.isBlank()) { onLog("双AI: 主AI未配置API Key"); callback(null); return }
         val useB = configB.enabled && configB.apiKey.isNotBlank()
 
+        onLog(if (useB) "双AI: ${configA.model} / ${configB.model}" else "双AI: ${configA.model}（辅AI未配置）")
         apiExecutor.execute {
             val latch = java.util.concurrent.CountDownLatch(if (useB) 2 else 1)
             var resultA: StanceResult? = null
@@ -449,7 +451,7 @@ class AIAnalyzer(
             val response = httpClient.newCall(request).execute()
             val body = response.body?.string()
             if (!response.isSuccessful) {
-                if (response.code == 403) onLog("$logPrefix: ✗ HTTP 403: API Key无权访问该模型，请检查设置。")
+                if (response.code == 403) onLog("$logPrefix: ✗ HTTP 403 无权访问 ${body?.take(80) ?: ""}")
                 else onLog("$logPrefix: ✗ HTTP ${response.code} ${body?.take(80) ?: ""}")
                 return null
             }
