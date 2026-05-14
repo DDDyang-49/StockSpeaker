@@ -1,9 +1,14 @@
 package com.stockspeaker
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -87,6 +92,18 @@ class MainActivity : ComponentActivity() {
         // if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
         //     ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         // ) requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+
+        // 电池优化白名单：息屏保活关键，国产 ROM 会杀后台进程
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    intent.data = Uri.parse("package:$packageName")
+                    startActivity(intent)
+                } catch (_: Exception) {}
+            }
+        }
 
         // 如果之前正在盯盘（被系统杀掉后返回），自动恢复
         if (configManager.load().monitoringActive) {

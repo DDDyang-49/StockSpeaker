@@ -16,7 +16,7 @@ app/src/main/java/com/stockspeaker/
 ├── StockMonitorService.kt     # 前台 Service，2 秒轮询 + 异动检测 + 三轨道播报调度
 ├── AIAnalyzer.kt              # 双 AI（主 AI 定时点评 + 辅 AI 资金面深析，独立配置）
 ├── StockFetcher.kt            # 腾讯行情 API（实时价/大单/K线/上证指数/流通市值）
-├── FundFlowFetcher.kt         # 百度资金流向，30 秒轮询
+├── FundFlowFetcher.kt         # 东财资金流向(日级累计)，30 秒轮询
 ├── ConceptBlockFetcher.kt     # 百度概念板块归属 + Alpha 差值计算
 ├── DragonTigerFetcher.kt      # 东方财富龙虎榜，静态标签 + SharedPreferences 日期缓存
 ├── MarketSentimentFetcher.kt  # 全市场情绪（涨跌比/涨停数/炸板率）
@@ -41,8 +41,11 @@ app/src/main/java/com/stockspeaker/
 - **所有业务逻辑（processStockData / TTS 播报）必须在主线程外执行**——`uiHandler.post {}` 内的代码息屏后不执行，整个播报停摆
 - **TTS 超时 Handler 必须用后台线程**——主线程 Handler 的 `postDelayed` 息屏后不触发，`isSpeaking` 卡死无法重置
 - **TTS 音频属性用 `USAGE_MEDIA`**——`USAGE_ASSISTANT` 在息屏/锁屏后可能被系统限制
-- **WakeLock** 防御性重申请：每轮循环检查 `isHeld`，部分国产 ROM（小米/华为/OPPO）会偷偷释放
-- **WifiLock** 同样需要防御性重申请，部分 ROM 也会偷偷释放
+- **WakeLock** 防御性强申：每轮循环无条件 `acquire(600000L)`（10分钟超时），不检查 `isHeld`——部分国产 ROM `isHeld` 返回值不可靠，且 `setReferenceCounted(false)` 下重复 acquire 是安全的
+- **WifiLock** 同样无条件 `acquire()`，不检查 `isHeld`
+- **电池优化白名单**：`MainActivity.onCreate` 中检查 `isIgnoringBatteryOptimizations`，不在白名单则弹系统原生申请框——国产 ROM 靠这个决定是否杀后台
+- **TTS 防卡死检查必须在 `runLoop()` 内执行**——不能放在 `processStockData()` 内。`processStockData` 依赖网络 fetch 成功才执行，Doze 期间网络阻塞 → `fetchInFlight` 永久为 true → 防卡死检查被跳过 → `isSpeaking` 卡死，整个播报停摆
+- **`fetchInFlight` 看门狗**：超过 60 秒未复位则强制重置。Doze 唤醒后 OkHttp socket 可能处于半死状态（不返回数据也不抛超时），导致 `fetchInFlight` 永久卡 true
 - 音频焦点丢失（`AUDIOFOCUS_LOSS`）时仅重新请求 `MAY_DUCK` 共存，不中断播报——短时金融语音不应被切歌打断
 
 ### 数据防污染
@@ -61,6 +64,14 @@ app/src/main/java/com/stockspeaker/
 - **箱体静默**：当前价与上次播报价差 < 0.3% 且量比 < 2.0 时，跳过完整播报
 - **大单阶梯报警**：当前手数 ≥ 上次报警手数 × 1.5 时，无视 30 秒冷却立即再次播报
 - **异动冷却独立**：大单、涨速、AI 异动三类各自独立 30 秒冷却，不同类型互不阻塞
+
+### 防御性编程与状态机铁律 (Critical)
+
+- **涨速滑动窗口**：禁止用 2 秒轮询差值算涨速！必须维护 `ArrayDeque` (size=8) 实现 15 秒滑动窗口，`windowSpeed = (当前价 - 窗口最早价) / 窗口最早价 * 100`，解决连续中小单脉冲漏报问题。
+- **双模自适应**：基于换手率(>5.0)或量比(>1.8)判定股票为【热门】或【潜伏】状态。热门股必须调高异动触发门槛（防噪），冷门股降低门槛（抓启动）。
+- **早盘豁免机制**：09:30-10:00 期间换手率未累积，动态大单/涨速阈值必须仅依赖 `volRatio` 缩放，10:00 之后再结合 `turnover`。
+- **严禁 Mock 数据**：所有 Fetcher 发生网络/解析异常时，必须返回 `null` 或空对象。**绝对禁止**硬编码 Mock 数据（如假造龙头股/涨停数）兜底，宁可无数据降级，不可假数据误导。
+- **API 异常防爆**：AI 接口若返回 HTTP 403（模型无权限）等非 200 状态码，必须在内部 catch 并简报异常，严禁将超长 JSON 报错堆栈输出至前端导致 UI 崩溃。
 
 ### v1.1.0 架构决策
 

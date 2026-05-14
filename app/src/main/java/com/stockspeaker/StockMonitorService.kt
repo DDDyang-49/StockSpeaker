@@ -105,6 +105,8 @@ class StockMonitorService : Service() {
     private var lastStockData: StockData? = null  // 缓存最近行情供双AI分析使用
     private var lastSpeed = 0.0
     @Volatile private var fetchInFlight = false  // 防止Doze期间网络阻塞导致任务堆积
+    @Volatile private var fetchStartedAt = 0L  // fetchInFlight 变为 true 的时间戳（看门狗用）
+    @Volatile private var watchdogWarned = false  // 看门狗是否已报警
 
     private fun aiLog(msg: String) {
         val line = "[${timeFmt.format(Date())}] $msg"
@@ -171,7 +173,7 @@ class StockMonitorService : Service() {
         lastFillInTime = 0L; fillInCount = 0; lastDualAnalysisTime = 0L
         postAlertPhase = 0; normalDeferred = false; lastAlertText = ""
         lastPostAlertData = null; batchQueue.clear()
-        alertActive = false; alertSettleCount = 0; lastTtsCheckTime = 0L
+        alertActive = false; alertSettleCount = 0; lastTtsCheckTime = 0L; fetchStartedAt = 0L; watchdogWarned = false
         lastShanghaiIndex = ""; shanghaiFetchCount = 0
         globalSentiment = GlobalSentiment(); lastSentimentFetchTime = 0L
         fundFlowCache = FundFlowData(); lastFundFlowFetchTime = 0L
@@ -220,15 +222,44 @@ class StockMonitorService : Service() {
         // 定时链会因网络阻塞而断裂 —— 这就是息屏停播的根因。
         loopHandler.postDelayed({ runLoop() }, 2000)
 
-        // 防御性重申请：部分国产 ROM 会偷偷释放锁
-        try { wakeLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {}
-        try { wifiLock?.let { if (!it.isHeld) it.acquire() } } catch (_: Exception) {}
+        // 防御性重申请：国产 ROM 会偷偷释放锁，setReferenceCounted(false) 下
+        // acquire() 重复调用是安全的。不检查 isHeld——部分 ROM 的 isHeld 返回值不可靠
+        try { wakeLock?.acquire(600000L) } catch (_: Exception) {}
+        try { wifiLock?.acquire() } catch (_: Exception) {}
 
-        if (fetchInFlight) return  // 上一轮网络请求仍在阻塞，跳过防止任务堆积
+        // ── TTS 防卡死（必须在 runLoop 内执行，不能依赖网络 fetch 成功） ──
+        // 息屏后 processStockData 因 fetchInFlight 阻塞不被调用，
+        // processStockData 内的防卡死检查无法执行 → isSpeaking 永久卡死。
+        // 此处在网络阻塞路径之外独立执行，确保每 2 秒循环都能检测。
+        val ttsCheckNow = System.currentTimeMillis()
+        if (ttsEngine.isSpeaking) {
+            if (lastTtsCheckTime == 0L) lastTtsCheckTime = ttsCheckNow
+            else if (ttsCheckNow - lastTtsCheckTime > 35000) {
+                ttsEngine.stop()
+                lastTtsCheckTime = 0L
+                watchdogWarned = false
+            }
+        } else {
+            lastTtsCheckTime = 0L
+        }
+
+        // ── 网络请求看门狗：fetchInFlight 超过 60 秒未复位 → 强制重置 ──
+        // OkHttp 3 秒超时在 Doze 期间被系统挂起，socket 可能在唤醒后处于
+        // 半死状态（既不返回数据也不抛超时异常），导致 fetchInFlight 永久为 true。
+        if (fetchInFlight) {
+            if (fetchStartedAt > 0 && ttsCheckNow - fetchStartedAt > 60000) {
+                fetchInFlight = false
+                fetchStartedAt = 0L
+                if (!watchdogWarned) { watchdogWarned = true }
+            }
+            return  // 上一轮网络请求仍在阻塞，跳过防止任务堆积
+        }
         fetchInFlight = true
+        fetchStartedAt = ttsCheckNow
+        watchdogWarned = false
 
         netExecutor.execute {
-            if (!isRunning) { fetchInFlight = false; return@execute }
+            if (!isRunning) { fetchInFlight = false; fetchStartedAt = 0L; return@execute }
             try {
                 val cm = ConfigManager(this@StockMonitorService)
                 config = cm.load()
@@ -286,8 +317,10 @@ class StockMonitorService : Service() {
                 // processStockData 必须在主线程外执行
                 // —— 息屏后 uiHandler.post 内的代码不执行，TTS 播报整个停摆
                 if (data != null) { processStockData(data) }
+                else { uiHandler.post { aiLog("⚠ 行情获取为空，检查是否息屏断网") } }
             } finally {
                 fetchInFlight = false
+                fetchStartedAt = 0L
             }
         }
     }

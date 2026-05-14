@@ -88,12 +88,14 @@ object MarketSentimentFetcher {
     }
 
     // ── ① 市场温度（涨跌家数 + 涨停跌停家数） ──
+    // f50/f51 在个股上是涨停价/跌停价，在指数上含义不明且不可靠。
+    // 涨停/跌停家数改用独立的板块列表 API，读 data.total 获取准确计数。
 
     private fun fetchMarketBreadth(): Quadruple<Int, Int, Int, Int> {
         try {
-            // f104=上涨家数 f105=下跌家数 f50=涨停家数 f51=跌停家数
+            // f104=上涨家数 f105=下跌家数（上证指数对象上的全市场统计字段）
             val url = "https://push2.eastmoney.com/api/qt/stock/get?secid=1.000001" +
-                    "&fields=f104,f105,f50,f51"
+                    "&fields=f104,f105"
             val req = Request.Builder().url(url)
                 .header("Referer", "https://quote.eastmoney.com/")
                 .build()
@@ -104,13 +106,30 @@ object MarketSentimentFetcher {
             fun Int.sane(): Int = if (this in 0..10000) this else 0
             val up = data.optInt("f104", 0).sane()
             val down = data.optInt("f105", 0).sane()
-            val limitUp = data.optInt("f50", 0).sane()
-            val limitDown = data.optInt("f51", 0).sane()
+            // 涨停/跌停家数从板块列表 API 获取
+            val limitUp = fetchBoardTotal("m:110+t3")
+            val limitDown = fetchBoardTotal("m:110+t4")
             if (up == 0 && down == 0 && limitUp == 0 && limitDown == 0) return Quadruple(0, 0, 0, 0)
             return Quadruple(up, down, limitUp, limitDown)
         } catch (_: Exception) {
             return Quadruple(0, 0, 0, 0)
         }
+    }
+
+    /** 查询板块列表 API 的总条数（涨停板 m:110+t3 / 跌停板 m:110+t4） */
+    private fun fetchBoardTotal(boardCode: String): Int {
+        try {
+            val url = "https://push2.eastmoney.com/api/qt/clist/get?" +
+                    "pn=1&pz=1&po=1&np=1&fltt=2&invt=2&fs=$boardCode&fields=f12"
+            val req = Request.Builder().url(url)
+                .header("Referer", "https://quote.eastmoney.com/")
+                .build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: return 0
+            val json = JSONObject(body)
+            val total = json.optJSONObject("data")?.optInt("total", 0) ?: 0
+            return if (total in 0..10000) total else 0
+        } catch (_: Exception) { return 0 }
     }
 
     // ── ② 主线风口（领涨概念板块 Top 3） ──
