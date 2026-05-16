@@ -29,14 +29,20 @@ data class FundFlowData(
             }
         }
 
-    /** 方向标签 */
+    /** 方向标签（阈值降低，避免小资金股票频繁触发"主力观望"） */
     val directionLabel: String
         get() = when {
+            mainForce > 5000 -> "主力大幅买入"
+            mainForce > 1000 -> "主力持续买入"
             mainForce > 500 -> "主力买入"
             mainForce > 100 -> "主力小幅买入"
+            mainForce > 30 -> "主力偏多"
+            mainForce < -5000 -> "主力大幅卖出"
+            mainForce < -1000 -> "主力持续卖出"
             mainForce < -500 -> "主力卖出"
             mainForce < -100 -> "主力小幅卖出"
-            else -> "主力观望"
+            mainForce < -30 -> "主力偏空"
+            else -> "资金平静"
         }
 
     val isEmpty: Boolean get() = mainForce == 0.0 && retail == 0.0

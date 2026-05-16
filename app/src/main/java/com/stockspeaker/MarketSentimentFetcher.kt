@@ -90,6 +90,8 @@ object MarketSentimentFetcher {
     // ── ① 市场温度（涨跌家数 + 涨停跌停家数） ──
     // f50/f51 在个股上是涨停价/跌停价，在指数上含义不明且不可靠。
     // 涨停/跌停家数改用独立的板块列表 API，读 data.total 获取准确计数。
+    // 注意：filter 格式必须是 m:110+t:3（带冒号），m:110+t3 会返回错误数据。
+    // f:!2 排除 ST 股（ST 涨停是 5% 不是 10%，混入会虚高）。
 
     private fun fetchMarketBreadth(): Quadruple<Int, Int, Int, Int> {
         try {
@@ -107,8 +109,9 @@ object MarketSentimentFetcher {
             val up = data.optInt("f104", 0).sane()
             val down = data.optInt("f105", 0).sane()
             // 涨停/跌停家数从板块列表 API 获取
-            val limitUp = fetchBoardTotal("m:110+t3")
-            val limitDown = fetchBoardTotal("m:110+t4")
+            // filter: m:110+t:3 = 涨停板, m:110+t:4 = 跌停板, f:!2 = 排除ST
+            val limitUp = fetchBoardTotal("m:110+t:3+f:!2")
+            val limitDown = fetchBoardTotal("m:110+t:4+f:!2")
             if (up == 0 && down == 0 && limitUp == 0 && limitDown == 0) return Quadruple(0, 0, 0, 0)
             return Quadruple(up, down, limitUp, limitDown)
         } catch (_: Exception) {
@@ -116,7 +119,7 @@ object MarketSentimentFetcher {
         }
     }
 
-    /** 查询板块列表 API 的总条数（涨停板 m:110+t3 / 跌停板 m:110+t4） */
+    /** 查询板块列表 API 的总条数（涨停板 / 跌停板） */
     private fun fetchBoardTotal(boardCode: String): Int {
         try {
             val url = "https://push2.eastmoney.com/api/qt/clist/get?" +

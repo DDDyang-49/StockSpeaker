@@ -105,6 +105,10 @@ class StockMonitorService : Service() {
     private var lastStockData: StockData? = null  // 缓存最近行情供双AI分析使用
     private var lastSpeed = 0.0
     @Volatile private var fetchInFlight = false  // 防止Doze期间网络阻塞导致任务堆积
+    // AI stance 冷却：避免连续重复同一建议（如反复"危险清仓"）
+    private var lastSpokenStance: Stance? = null
+    private var lastStanceSpeakTime = 0L
+    private val stanceCooldownMs = 300000L  // 5分钟内不重复同一 stance
     @Volatile private var fetchStartedAt = 0L  // fetchInFlight 变为 true 的时间戳（看门狗用）
     @Volatile private var watchdogWarned = false  // 看门狗是否已报警
 
@@ -181,6 +185,7 @@ class StockMonitorService : Service() {
         dragonTigerTag = ""
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         priceHistory.clear()
+        lastSpokenStance = null; lastStanceSpeakTime = 0L  // 重置stance冷却
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.buildMinimal(this))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
         // 启动时异步抓取龙虎榜静态标签（SharedPreferences日期缓存，过期自动刷新）
@@ -602,6 +607,19 @@ class StockMonitorService : Service() {
         aiAnalyzer.generateSummary(ctx, lastShanghaiIndex, globalSentiment) { summary ->
             aiRequestInFlight = false
             if (summary != null) uiHandler.post {
+                // stance 冷却检查：5分钟内不重复同一建议
+                val currentStance = aiAnalyzer.lastStance
+                val now = System.currentTimeMillis()
+                if (currentStance != null && currentStance == lastSpokenStance &&
+                    now - lastStanceSpeakTime < stanceCooldownMs) {
+                    aiLog("AI点评: 跳过重复stance ${currentStance.label}")
+                    return@post
+                }
+                if (currentStance != null) {
+                    lastSpokenStance = currentStance
+                    lastStanceSpeakTime = now
+                }
+
                 aiLog("AI点评: ${summary.take(30)}...")
                 if (summary.length > 60) {
                     // 长文本 → 辅AI拆分为短句分批播报
@@ -636,6 +654,19 @@ class StockMonitorService : Service() {
         aiAnalyzer.generatePostAlertAnalysis(alertText, snapshots, lastShanghaiIndex, globalSentiment, config.stockSector, postCtx) { result ->
             aiRequestInFlight = false
             if (result != null) uiHandler.post {
+                // stance 冷却检查：异动复盘也需要避免重复
+                val currentStance = aiAnalyzer.lastStance
+                val now = System.currentTimeMillis()
+                if (currentStance != null && currentStance == lastSpokenStance &&
+                    now - lastStanceSpeakTime < stanceCooldownMs) {
+                    aiLog("异动复盘: 跳过重复stance ${currentStance.label}")
+                    return@post
+                }
+                if (currentStance != null) {
+                    lastSpokenStance = currentStance
+                    lastStanceSpeakTime = now
+                }
+
                 aiLog("异动复盘: ${result.take(30)}...")
                 if (!ttsEngine.isSpeaking) {
                     ttsEngine.speak(result)
@@ -680,7 +711,7 @@ class StockMonitorService : Service() {
         parts.add(h)
         if (config.speakPct) parts.add(spokenChange(data.changePct))
 
-        // v1.1.0: 主力资金代替成交额（信息密度更高，含四象限判定）
+        // v1.1.0: 资金流向放在涨幅之后、其他数据之前，确保突出
         if (config.speakAmount) {
             if (config.fundFlowEnabled && !fundFlowCache.isEmpty) {
                 val flowText = "${fundFlowCache.directionLabel}${fundFlowCache.mainForceStr}"
@@ -688,9 +719,9 @@ class StockMonitorService : Service() {
                 val fundInflow = fundFlowCache.mainForce > 100
                 val fundOutflow = fundFlowCache.mainForce < -100
                 if (fundInflow && speed < 0) {
-                    parts.add("$flowText（⚠主力派发）")
+                    parts.add("⚠主力派发，$flowText")
                 } else if (fundOutflow && speed > 0.5) {
-                    parts.add("$flowText（⚠无量空涨）")
+                    parts.add("⚠无量空涨，$flowText")
                 } else {
                     parts.add(flowText)
                 }

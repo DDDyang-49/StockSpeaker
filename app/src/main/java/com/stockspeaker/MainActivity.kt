@@ -461,6 +461,10 @@ private fun SettingsTab(
             }
             Spacer(Modifier.height(10.dp))
             LabelField("模型名称", value = aiModel, onValue = onAiModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
+            if (aiProvider == "edgefn") {
+                Text("EdgeFn 仅支持 Qwen3-235B-A22B-2507，其他模型会 403/timeout",
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.error, lineHeight = 16.sp)
+            }
             Spacer(Modifier.height(10.dp))
             // API Key + 历史下拉
             Box(Modifier.fillMaxWidth()) {
@@ -517,6 +521,10 @@ private fun SettingsTab(
             }
             Spacer(Modifier.height(10.dp))
             LabelField("模型名称", value = aiTwoModel, onValue = onAiTwoModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
+            if (aiTwoProvider == "edgefn") {
+                Text("EdgeFn 仅支持 Qwen3-235B-A22B-2507，其他模型会 403/timeout",
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.error, lineHeight = 16.sp)
+            }
             Spacer(Modifier.height(10.dp))
             // 辅AI Key + 历史下拉
             Box(Modifier.fillMaxWidth()) {
