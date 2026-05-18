@@ -429,23 +429,21 @@ class AIAnalyzer(
         val trend = describeTrend(snapshots)
         return buildString {
             val slice = sentiment.toSentimentSlice()
-            if (slice.isNotBlank()) append("$slice ")
-            // 资金面（含四象限防伪标记）
+            if (slice.isNotBlank()) append(slice)
+            if (context.blockInfo.isNotBlank()) append("板块:${context.blockInfo}|")
             if (context.fundFlowDirection.isNotBlank()) {
-                append("主力${context.fundFlowDirection}${context.fundFlowAmount}")
-                if (context.fundFlowQuadrant.isNotBlank()) append("【${context.fundFlowQuadrant}】")
-                append("；")
+                append("主力:${context.fundFlowDirection}${context.fundFlowAmount}")
+                if (context.fundFlowQuadrant.isNotBlank()) append("|判定:${context.fundFlowQuadrant}")
+                append("|")
             }
-            if (context.mcapContext.isNotBlank()) append("流通市值：${context.mcapContext}；")
-
-            append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
-            append("成交${latest.amountStr}，近30秒${trend}。")
-            append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
-            if (dailyHistory.isNotBlank()) append("近5日K线：${dailyHistory}。")
-            if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            if (context.blockInfo.isNotBlank()) append("板块：${context.blockInfo}。")
-            val stance = lastStance; if (stance != null) append("你上次判断为${stance.bracketLabel}，请结合最新数据判断是否修正观点。")
-            append("综合技术面、K线形态、盘口博弈、资金流向和大盘环境，给出持仓防守建议（四选一）。")
+            if (context.mcapContext.isNotBlank()) append("市值:${context.mcapContext}|")
+            append("价:${latest.price}|涨跌:${latest.changePct}%|${trend}|")
+            append("量比:${latest.volRatio}|成交:${latest.amountStr}|")
+            append("盘口:卖${latest.largeAsksCount}/买${latest.largeBidsCount}|")
+            if (dailyHistory.isNotBlank()) append("K线:${dailyHistory}|")
+            if (shanghaiIndex.isNotBlank()) append("大盘:${shanghaiIndex}|")
+            val stance = lastStance; if (stance != null) append("上次:${stance.bracketLabel}|")
+            append("给出持仓建议四选一。")
         }
     }
 
@@ -454,19 +452,16 @@ class AIAnalyzer(
         val trend = describeTrend(snapshots)
         return buildString {
             val slice = sentiment.toSentimentSlice()
-            if (slice.isNotBlank()) append("$slice ")
-            // 真实资金数据替代假数据
+            if (slice.isNotBlank()) append(slice)
             val fundDir = if (context.fundFlowDirection.isNotBlank()) context.fundFlowDirection
                 else if (latest.changePct > 0) "偏流入" else if (latest.changePct < 0) "偏流出" else "平衡"
-            append("${latest.price}元，涨跌${latest.changePct}%，量比${latest.volRatio}，")
-            append("成交${latest.amountStr}，资金${fundDir}")
-            if (context.fundFlowAmount.isNotBlank()) append("${context.fundFlowAmount}")
-            append("，近30秒${trend}。")
-            if (context.dragonTigerTag.isNotBlank()) append("${context.dragonTigerTag}。")
-            append("卖盘${latest.largeAsksCount}单对买盘${latest.largeBidsCount}单。")
-            if (dailyHistory.isNotBlank()) append("近日K线：${dailyHistory}。")
-            if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            val stance = lastStance; if (stance != null) append("你上次判断为${stance.bracketLabel}，请结合最新数据判断是否修正观点。")
+            append("价:${latest.price}|涨跌:${latest.changePct}%|${trend}|")
+            append("量比:${latest.volRatio}|成交:${latest.amountStr}|主力:${fundDir}${context.fundFlowAmount}|")
+            if (context.dragonTigerTag.isNotBlank()) append("${context.dragonTigerTag}|")
+            append("盘口:卖${latest.largeAsksCount}/买${latest.largeBidsCount}|")
+            if (dailyHistory.isNotBlank()) append("K线:${dailyHistory}|")
+            if (shanghaiIndex.isNotBlank()) append("大盘:${shanghaiIndex}|")
+            val stance = lastStance; if (stance != null) append("上次:${stance.bracketLabel}|")
             append("综合资金流向、主力意图、近日K线趋势和大盘环境，给出持仓防守建议。")
         }
     }
@@ -493,7 +488,8 @@ class AIAnalyzer(
             val json = """
                 |{
                 |  "model": "$model",
-                |  "max_tokens": 200,
+                |  "max_tokens": 80,
+                |  "temperature": 0.1,
                 |  "messages": [
                 |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
                 |    {"role": "user", "content": ${toJsonStr(userPrompt)}}
@@ -639,121 +635,61 @@ class AIAnalyzer(
         return patterns[Random.nextInt(patterns.size)]
     }
 
-    // ── 构建深度分析提示词（五层框架：资金面→归因→对手盘→结构→风险） ──
+    // ── 构建深度分析提示词（缓存优化：静态→半静态→高频动态） ──
     private fun buildPrompt(context: MarketContext = MarketContext(), alertContext: String = "", shanghaiIndex: String = "", sentiment: GlobalSentiment = GlobalSentiment()): String {
         if (recentData.isEmpty()) return ""
         val latest = recentData.last()
         val history = recentData.toList()
 
-        // 趋势判定
+        // 高频动态：趋势+振幅+量价
         val first = history.first()
         val delta = latest.price - first.price
-        val trend = when {
-            delta > 0.5 -> "持续上涨"; delta > 0 -> "小幅上涨"
-            delta < -0.5 -> "持续下跌"; delta < 0 -> "小幅下跌"
-            else -> "横盘震荡"
-        }
-
-        // 日内振幅
+        val trend = when { delta > 0.5 -> "↑持续"; delta > 0 -> "↑微涨"; delta < -0.5 -> "↓持续"; delta < 0 -> "↓微跌"; else -> "→横盘" }
         val highPrice = history.maxOf { it.price }
         val lowPrice = history.minOf { it.price }
-        val amplitude = if (lowPrice > 0) "%.2f".format((highPrice - lowPrice) / lowPrice * 100) else "0"
-
-        // 量能判断
-        val volDesc = when {
-            latest.volRatio >= 2.5 -> "剧烈放量"
-            latest.volRatio >= 1.5 -> "明显放量"
-            latest.volRatio >= 1.1 -> "温和放量"
-            latest.volRatio <= 0.4 -> "极度缩量"
-            latest.volRatio <= 0.7 -> "偏缩量"
-            else -> "量能正常"
+        val amp = if (lowPrice > 0) "%.1f".format((highPrice - lowPrice) / lowPrice * 100) else "0"
+        val vp = when {
+            latest.changePct > 0.3 && latest.volRatio > 1.3 -> "量增"
+            latest.changePct > 0.3 && latest.volRatio < 0.8 -> "量缩背离"
+            latest.changePct < -0.3 && latest.volRatio > 1.3 -> "放量杀跌"
+            latest.changePct < -0.3 && latest.volRatio < 0.8 -> "缩量阴跌"
+            Math.abs(latest.changePct) < 0.15 && latest.volRatio > 1.5 -> "放量滞涨"
+            Math.abs(latest.changePct) < 0.08 && latest.volRatio < 0.5 -> "缩量变盘"
+            else -> "正常"
         }
-
-        // 量价关系
-        val volPriceRel = when {
-            latest.changePct > 0.3 && latest.volRatio > 1.3 -> "价升量增，多头主动"
-            latest.changePct > 0.3 && latest.volRatio < 0.8 -> "价升量缩，上攻乏力有背离"
-            latest.changePct < -0.3 && latest.volRatio > 1.3 -> "价跌量增，空头打压"
-            latest.changePct < -0.3 && latest.volRatio < 0.8 -> "价跌量缩，抛压减轻"
-            Math.abs(latest.changePct) < 0.15 && latest.volRatio > 1.5 -> "放量滞涨，多空分歧大"
-            Math.abs(latest.changePct) < 0.08 && latest.volRatio < 0.5 -> "缩量横盘，变盘前兆"
-            else -> "量价配合正常"
-        }
-
-        // 盘口博弈
-        val orderBook = buildString {
-            if (latest.largeAsksCount > 0 || latest.largeBidsCount > 0) {
-                if (latest.largeAsksCount > 0) append("卖盘${latest.largeAsksCount}档大单")
-                if (latest.largeAsksCount > 0 && latest.largeBidsCount > 0) append("对")
-                if (latest.largeBidsCount > 0) append("买盘${latest.largeBidsCount}档大单")
-                append(when {
-                    latest.largeAsksCount > latest.largeBidsCount + 2 -> "，空方占优"
-                    latest.largeBidsCount > latest.largeAsksCount + 2 -> "，多方占优"
-                    else -> "，多空均衡"
-                })
-            }
-        }
-
-        // 分时特征
-        val avgPrice = history.map { it.price }.average()
-        var crosses = 0
-        for (i in 1 until history.size) {
-            if ((history[i-1].price - avgPrice) * (history[i].price - avgPrice) < 0) crosses++
-        }
-        val jagDesc = when { crosses >= 5 -> "分时锯齿状，反复穿越均线"; crosses >= 3 -> "分时有震荡"; else -> "" }
-
-        val changeStr = if (latest.changePct > 0) "+${latest.changePct}%" else "${latest.changePct}%"
+        val chg = if (latest.changePct > 0) "+${latest.changePct}" else "${latest.changePct}"
 
         return buildString {
-            // ── 五层分析框架数据注入 ──
-
-            // 【第1层-资金面】（含四象限防伪判定）
-            val fundParts = mutableListOf<String>()
-            if (context.fundFlowDirection.isNotBlank()) {
-                fundParts.add("主力：${context.fundFlowDirection}${if (context.fundFlowAmount.isNotBlank()) " ${context.fundFlowAmount}" else ""}")
-                if (context.fundFlowQuadrant.isNotBlank()) fundParts.add("判定：${context.fundFlowQuadrant}")
-            }
-            if (context.dragonTigerTag.isNotBlank()) fundParts.add(context.dragonTigerTag)
-            if (context.mcapContext.isNotBlank()) fundParts.add("流通市值：${context.mcapContext}")
-            if (fundParts.isNotEmpty()) append("【资金面】${fundParts.joinToString("；")}。")
-
-            // 【第2层-归因】（含Alpha差值）
-            if (context.blockInfo.isNotBlank() || context.alphaDiff.isNotBlank()) {
-                append("【归因】")
-                if (context.blockInfo.isNotBlank()) append("${context.blockInfo}。")
-                if (context.alphaDiff.isNotBlank()) append("Alpha差值：${context.alphaDiff}。")
-                if (context.relativeStrength.isNotBlank()) append("判定：${context.relativeStrength}。")
-            }
-            if (context.stockSector.isNotBlank()) {
-                append("核心题材：【${context.stockSector}】。")
-            }
-
-            // 【第3层-对手盘】+ 全市场情绪
+            // 【半静态 5min更新】情绪+板块+龙虎
             val slice = sentiment.toSentimentSlice()
-            if (slice.isNotBlank()) append("$slice ")
+            if (slice.isNotBlank()) append(slice)
+            if (context.stockSector.isNotBlank()) append("题材:${context.stockSector}|")
+            if (context.blockInfo.isNotBlank()) append("板块:${context.blockInfo}|")
+            if (context.alphaDiff.isNotBlank()) append("Alpha:${context.alphaDiff}|")
+            if (context.dragonTigerTag.isNotBlank()) append("${context.dragonTigerTag}|")
 
-            // 【第4层-结构】
-            append("${latest.price}元，$changeStr，近30秒${trend}。")
-            append("量比${latest.volRatio}（${volDesc}），成交${latest.amountStr}。")
-            append("量价关系：${volPriceRel}。")
-            append("日内振幅${amplitude}%。")
-            if (orderBook.isNotEmpty()) append("盘口：${orderBook}。")
-            if (jagDesc.isNotEmpty()) append(jagDesc + "。")
-            if (context.mcapContext.isNotBlank()) append("流通市值：${context.mcapContext}。")
+            // 【高频动态 实时】价格+量+资金+盘口
+            append("价:${latest.price}|涨跌:${chg}%|${trend}|")
+            append("量比:${latest.volRatio}|成交:${latest.amountStr}|振幅:${amp}%|量价:${vp}|")
+            if (context.fundFlowDirection.isNotBlank()) {
+                append("主力:${context.fundFlowDirection}")
+                if (context.fundFlowAmount.isNotBlank()) append(context.fundFlowAmount)
+                if (context.fundFlowQuadrant.isNotBlank()) append("|判定:${context.fundFlowQuadrant}")
+                append("|")
+            }
+            if (latest.largeAsksCount > 0 || latest.largeBidsCount > 0) {
+                append("盘口:卖${latest.largeAsksCount}档/买${latest.largeBidsCount}档|")
+            }
+            if (context.mcapContext.isNotBlank()) append("市值:${context.mcapContext}|")
+            if (context.limitDistance.isNotBlank()) append("距涨跌停:${context.limitDistance}|")
 
-            // 【第5层-风险】
-            if (context.limitDistance.isNotBlank()) append("【风险】${context.limitDistance}。")
-
-            // 其他上下文
+            if (shanghaiIndex.isNotBlank()) append("大盘:${shanghaiIndex}|")
+            val stance = lastStance; if (stance != null) append("上次:${stance.bracketLabel}|")
             if (alertContext.isNotBlank()) append(alertContext)
-            if (context.alertStats.isNotBlank()) append("近期异动：${context.alertStats}。")
-            if (context.newsHeadline.isNotBlank()) append("消息面：${context.newsHeadline}。")
-            if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            val stance = lastStance; if (stance != null) append("你上次判断为${stance.bracketLabel}，请结合最新数据判断是否修正观点。")
+            if (context.alertStats.isNotBlank()) append("异动:${context.alertStats}|")
+            if (context.newsHeadline.isNotBlank()) append("消息:${context.newsHeadline}|")
 
-            append("从以上数据中挑最值得说的1-2个关键信号，用2-4句口语点评。")
-            append("优先关注：四象限资金判定、Alpha差值方向、量价异常、涨跌停风险。")
-            append("像交易主管在对讲机里下指令——精准、简洁。不超过80字。")
+            append("挑1-2个关键信号口语点评，不超过80字。")
         }
     }
 
@@ -767,24 +703,21 @@ class AIAnalyzer(
         } else "波动"
 
         return buildString {
-            if (stockSector.isNotBlank()) append("该股当前核心炒作题材为：【${stockSector}】。")
+            if (stockSector.isNotBlank()) append("题材:${stockSector}|")
             val slice = sentiment.toSentimentSlice()
-            if (slice.isNotBlank()) append("$slice ")
-            // 资金上下文（含四象限判定）
+            if (slice.isNotBlank()) append(slice)
             if (context.fundFlowDirection.isNotBlank()) {
-                append("主力${context.fundFlowDirection}${context.fundFlowAmount}")
-                if (context.fundFlowQuadrant.isNotBlank()) append("【${context.fundFlowQuadrant}】")
-                append("；")
+                append("主力:${context.fundFlowDirection}${context.fundFlowAmount}")
+                if (context.fundFlowQuadrant.isNotBlank()) append("|判定:${context.fundFlowQuadrant}")
+                append("|")
             }
-            append("刚发生异动：${alertText.take(60)}。")
-            append("异动后当前${latest.price}元，${trend}中。")
-            append("量比${latest.volRatio}，成交${latest.amountStr}。")
-            append("卖盘${latest.largeAsksCount}档大单，买盘${latest.largeBidsCount}档大单。")
-            if (context.blockInfo.isNotBlank()) append("板块：${context.blockInfo}。")
-            if (shanghaiIndex.isNotBlank()) append("大盘：${shanghaiIndex}。")
-            val stance = lastStance; if (stance != null) append("你上次判断为${stance.bracketLabel}，请结合最新数据判断是否修正观点。")
-            append("结合资金方向和板块强弱，分析这波异动是什么意图？后续走势怎么看？")
-            append("用2-3句口语点评，像老股民复盘异动，不超过60字。")
+            append("异动:${alertText.take(40)}|")
+            append("价:${latest.price}|${trend}|量比:${latest.volRatio}|成交:${latest.amountStr}|")
+            append("盘口:卖${latest.largeAsksCount}/买${latest.largeBidsCount}|")
+            if (context.blockInfo.isNotBlank()) append("板块:${context.blockInfo}|")
+            if (shanghaiIndex.isNotBlank()) append("大盘:${shanghaiIndex}|")
+            val stance = lastStance; if (stance != null) append("上次:${stance.bracketLabel}|")
+            append("用2-3句口语复盘异动意图，不超过60字。")
         }
     }
 

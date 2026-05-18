@@ -64,6 +64,10 @@ class StockMonitorService : Service() {
     private var lastAlertHand = 0          // 上次报警的大单手数（阶梯报警用）
     private var lastSpeedAlertTime = 0L   // 涨速异动冷却
     private var lastPatternAlertTime = 0L // AI异动冷却
+    // ── AI 状态机冷冻期（模块3：拦截无效调用，降本增效） ──
+    private var lastAiTime = 0L
+    private var lastAiPrice = 0.0
+    private var lastAiFundDir = ""  // "in"/"out"/""
     private var alertActive = false      // 异动进行中，需等待平复
     private var alertSettleCount = 0    // 平复计数（连续无异常轮次）
     private var normalBroadcastCount = 0
@@ -186,6 +190,7 @@ class StockMonitorService : Service() {
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         priceHistory.clear()
         lastSpokenStance = null; lastStanceSpeakTime = 0L  // 重置stance冷却
+        lastAiTime = 0L; lastAiPrice = 0.0; lastAiFundDir = ""  // 重置冷冻期
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.buildMinimal(this))
         uiState.value = uiState.value.copy(isRunning = true, aiLog = aiLogs.toList())
         // 启动时异步抓取龙虎榜静态标签（SharedPreferences日期缓存，过期自动刷新）
@@ -613,11 +618,32 @@ class StockMonitorService : Service() {
     private fun maybeGenerateAiSummary(data: StockData, speed: Double) {
         if (!config.aiEnabled || config.aiApiKey.isBlank()) return
         if (aiRequestInFlight) return
+        // ── 状态机冷冻期：价格+资金方向无实质变化则跳过 ──
+        val now = System.currentTimeMillis()
+        val curFundDir = when {
+            fundFlowCache.mainForce > 100 -> "in"
+            fundFlowCache.mainForce < -100 -> "out"
+            else -> ""
+        }
+        if (lastAiTime > 0 && now - lastAiTime < 180000) {
+            val priceChange = if (lastAiPrice > 0) Math.abs(data.price - lastAiPrice) / lastAiPrice * 100 else 999.0
+            if (priceChange < 0.5 && curFundDir == lastAiFundDir) {
+                return  // 价格和资金方向均无实质变化，沿用上次结果
+            }
+        }
         if (normalBroadcastCount % config.aiSummaryInterval != 0) return
         aiRequestInFlight = true
         val ctx = buildContext(data, speed)
         aiAnalyzer.generateSummary(ctx, lastShanghaiIndex, globalSentiment) { summary ->
             aiRequestInFlight = false
+            // 更新冷冻期状态
+            lastAiTime = System.currentTimeMillis()
+            lastAiPrice = data.price
+            lastAiFundDir = when {
+                fundFlowCache.mainForce > 100 -> "in"
+                fundFlowCache.mainForce < -100 -> "out"
+                else -> ""
+            }
             if (summary != null) uiHandler.post {
                 // stance 冷却检查：5分钟内不重复同一建议
                 val currentStance = aiAnalyzer.lastStance

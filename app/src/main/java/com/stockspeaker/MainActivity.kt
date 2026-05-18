@@ -138,12 +138,14 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     var transactionOpt by remember { mutableStateOf(cfg.speakTransactionDetail) }
     var aiEnabled by remember { mutableStateOf(cfg.aiEnabled) }
     var aiProvider by remember { mutableStateOf(cfg.aiProvider) }
+    var aiApiUrl by remember { mutableStateOf(cfg.aiApiUrl) }
     var aiModel by remember { mutableStateOf(cfg.aiModel) }
     var aiKey by remember { mutableStateOf(cfg.aiApiKey) }
     var aiInterval by remember { mutableStateOf(cfg.aiSummaryInterval.toString()) }
     var showKey by remember { mutableStateOf(false) }
     var aiTwoEnabled by remember { mutableStateOf(cfg.aiTwoEnabled) }
     var aiTwoProvider by remember { mutableStateOf(cfg.aiTwoProvider) }
+    var aiTwoApiUrl by remember { mutableStateOf(cfg.aiTwoApiUrl) }
     var aiTwoModel by remember { mutableStateOf(cfg.aiTwoModel) }
     var aiTwoKey by remember { mutableStateOf(cfg.aiTwoApiKey) }
     var showKey2 by remember { mutableStateOf(false) }
@@ -180,11 +182,11 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
             speakLargeOrders = largeOrderOpt,
             speakTransactionDetail = transactionOpt,
             aiEnabled = aiEnabled, aiApiKey = aiKey.trim(),
-            aiProvider = aiProvider, aiApiUrl = pi.url, aiModel = aiModel.trim().ifBlank { pi.model },
+            aiProvider = aiProvider, aiApiUrl = aiApiUrl.trim().ifBlank { pi.url }, aiModel = aiModel.trim().ifBlank { pi.model },
             aiThinkingModel = pi.thinkingModel,
             aiSummaryInterval = aiInterval.toIntOrNull() ?: 5,
             aiTwoEnabled = aiTwoEnabled, aiTwoApiKey = twoKey,
-            aiTwoProvider = aiTwoProvider, aiTwoApiUrl = pi2.url, aiTwoModel = aiTwoModel.trim().ifBlank { pi2.model },
+            aiTwoProvider = aiTwoProvider, aiTwoApiUrl = aiTwoApiUrl.trim().ifBlank { pi2.url }, aiTwoModel = aiTwoModel.trim().ifBlank { pi2.model },
             aiTwoThinkingModel = pi2.thinkingModel,
             monitoringActive = true,
             stockSector = stockSector.trim(),
@@ -250,12 +252,12 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                 speedOpt, { speedOpt = it }, amountOpt, { amountOpt = it },
                 volRatioOpt, { volRatioOpt = it }, handOpt, { handOpt = it },
                 largeOrderOpt, { largeOrderOpt = it }, transactionOpt, { transactionOpt = it },
-                aiEnabled, { aiEnabled = it }, aiProvider, { id -> aiProvider = id; aiModel = AI_PROVIDERS.find { it.id == id }?.model ?: "" },
-                aiModel, { aiModel = it },
+                aiEnabled, { aiEnabled = it }, aiProvider, { id -> aiProvider = id; aiModel = AI_PROVIDERS.find { it.id == id }?.model ?: ""; aiApiUrl = AI_PROVIDERS.find { it.id == id }?.url ?: "" },
+                aiApiUrl, { aiApiUrl = it }, aiModel, { aiModel = it },
                 aiKey, { aiKey = it }, aiInterval, { aiInterval = it },
                 showKey, { showKey = it }, aiTwoEnabled, { aiTwoEnabled = it },
-                aiTwoProvider, { id -> aiTwoProvider = id; aiTwoModel = AI_PROVIDERS.find { it.id == id }?.model ?: "" },
-                aiTwoModel, { aiTwoModel = it },
+                aiTwoProvider, { id -> aiTwoProvider = id; aiTwoModel = AI_PROVIDERS.find { it.id == id }?.model ?: ""; aiTwoApiUrl = AI_PROVIDERS.find { it.id == id }?.url ?: "" },
+                aiTwoApiUrl, { aiTwoApiUrl = it }, aiTwoModel, { aiTwoModel = it },
                 aiTwoKey, { aiTwoKey = it },
                 showKey2, { showKey2 = it }, aiKeyNote, { aiKeyNote = it },
                 aiTwoKeyNote, { aiTwoKeyNote = it }, stockSector, { stockSector = it },
@@ -374,12 +376,14 @@ private fun SettingsTab(
     transactionOpt: Boolean, onTransaction: (Boolean) -> Unit,
     aiEnabled: Boolean, onAi: (Boolean) -> Unit,
     aiProvider: String, onAiProvider: (String) -> Unit,
+    aiApiUrl: String, onAiApiUrl: (String) -> Unit,
     aiModel: String, onAiModel: (String) -> Unit,
     aiKey: String, onAiKey: (String) -> Unit,
     aiInterval: String, onAiInterval: (String) -> Unit,
     showKey: Boolean, onShowKey: (Boolean) -> Unit,
     aiTwoEnabled: Boolean, onAiTwo: (Boolean) -> Unit,
     aiTwoProvider: String, onAiTwoProvider: (String) -> Unit,
+    aiTwoApiUrl: String, onAiTwoApiUrl: (String) -> Unit,
     aiTwoModel: String, onAiTwoModel: (String) -> Unit,
     aiTwoKey: String, onAiTwoKey: (String) -> Unit,
     showKey2: Boolean, onShowKey2: (Boolean) -> Unit,
@@ -461,10 +465,8 @@ private fun SettingsTab(
             }
             Spacer(Modifier.height(10.dp))
             LabelField("模型名称", value = aiModel, onValue = onAiModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
-            if (aiProvider == "edgefn") {
-                Text("EdgeFn 仅支持 Qwen3-235B-A22B-2507，其他模型会 403/timeout",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.error, lineHeight = 16.sp)
-            }
+            Spacer(Modifier.height(10.dp))
+            LabelField("API URL", value = aiApiUrl, onValue = onAiApiUrl, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(6.dp))
             Text("AI视角自动轮换：游资主力(70%)、心理学家(10%)、哲学家(10%)、玄学家(10%)，避免听感疲劳",
                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
@@ -527,10 +529,8 @@ private fun SettingsTab(
             }
             Spacer(Modifier.height(10.dp))
             LabelField("模型名称", value = aiTwoModel, onValue = onAiTwoModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
-            if (aiTwoProvider == "edgefn") {
-                Text("EdgeFn 仅支持 Qwen3-235B-A22B-2507，其他模型会 403/timeout",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.error, lineHeight = 16.sp)
-            }
+            Spacer(Modifier.height(10.dp))
+            LabelField("API URL", value = aiTwoApiUrl, onValue = onAiTwoApiUrl, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
             // 辅AI Key + 历史下拉
             Box(Modifier.fillMaxWidth()) {
