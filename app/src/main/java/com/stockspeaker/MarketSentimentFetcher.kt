@@ -109,9 +109,10 @@ object MarketSentimentFetcher {
             val up = data.optInt("f104", 0).sane()
             val down = data.optInt("f105", 0).sane()
             // 涨停/跌停家数从板块列表 API 获取
-            // filter: m:110+t:3 = 涨停板, m:110+t:4 = 跌停板, f:!2 = 排除ST
-            val limitUp = fetchBoardTotal("m:110+t:3+f:!2")
-            val limitDown = fetchBoardTotal("m:110+t:4+f:!2")
+            // 注意：m:110+t:3 格式返回 rc:102 无效，必须用 m:110+t3（无冒号）
+            // 此 filter 包含 ST 股（ST 涨停 5%），计数会比同花顺略高
+            val limitUp = fetchBoardTotal("m:110+t3")
+            val limitDown = fetchBoardTotal("m:110+t4")
             if (up == 0 && down == 0 && limitUp == 0 && limitDown == 0) return Quadruple(0, 0, 0, 0)
             return Quadruple(up, down, limitUp, limitDown)
         } catch (_: Exception) {

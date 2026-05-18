@@ -465,6 +465,9 @@ private fun SettingsTab(
                 Text("EdgeFn 仅支持 Qwen3-235B-A22B-2507，其他模型会 403/timeout",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.error, lineHeight = 16.sp)
             }
+            Spacer(Modifier.height(6.dp))
+            Text("AI视角自动轮换：游资主力(70%)、心理学家(10%)、哲学家(10%)、玄学家(10%)，避免听感疲劳",
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
             Spacer(Modifier.height(10.dp))
             // API Key + 历史下拉
             Box(Modifier.fillMaxWidth()) {
@@ -509,6 +512,9 @@ private fun SettingsTab(
 
         // ── 辅 AI ──
         Section("辅AI · 资金面分析") {
+            Text("双AI需要同时启用主AI和辅AI。建议使用不同提供商（如主AI DeepSeek + 辅AI EdgeFn Qwen），分析更全面。",
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
+            Spacer(Modifier.height(6.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AI_PROVIDERS.forEach { p ->
                     FilterChip(

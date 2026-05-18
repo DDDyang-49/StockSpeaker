@@ -48,6 +48,29 @@ enum class Stance(val label: String) {
     }
 }
 
+// ── 视角轮盘（多视角分析，避免听感疲劳） ──
+
+enum class Perspective(val label: String, val weight: Int) {
+    TRADER("游资主力", 70),
+    PSYCHOLOGIST("心理学家", 10),
+    PHILOSOPHER("哲学家", 10),
+    METAPHYSICIAN("玄学家", 10);
+
+    companion object {
+        private val totalWeight = entries.sumOf { it.weight }
+
+        /** 按权重随机选一个视角 */
+        fun pick(): Perspective {
+            var roll = Random.nextInt(totalWeight)
+            for (p in entries) {
+                roll -= p.weight
+                if (roll < 0) return p
+            }
+            return TRADER
+        }
+    }
+}
+
 // ── 异动模式 ──
 
 enum class PatternType {
@@ -79,7 +102,8 @@ data class AiConfig(
     val apiUrl: String = "https://api.edgefn.net/v1/chat/completions",
     val model: String = "Qwen3-235B-A22B-2507",
     val thinkingModel: String = "",
-    val summaryInterval: Int = 5
+    val summaryInterval: Int = 5,
+    val provider: String = "edgefn"
 )
 
 class AIAnalyzer(
@@ -116,6 +140,41 @@ class AIAnalyzer(
         "④净流出+涨速<-0.5%=主力真砸盘（危险清仓）。" +
         "【铁律5：Alpha差值】必须根据个股涨幅-板块涨幅的Alpha差值判断个股地位。差值>0说明强于板块，给予更多容忍度；差值<0判定为跟风杂毛，遇阻坚决提示减仓或清仓。" +
         "【铁律6：流通市值】流通市值<50亿极易被游资操控，须警惕假突破；>200亿需要板块大级别资金共振才可持续。"
+
+    // ── 多视角 persona（不用专业术语，老百姓听得懂） ──
+
+    private val PERSONA_MAP = mapOf(
+        Perspective.TRADER to FIXED_PERSONA,
+        Perspective.PSYCHOLOGIST to "你是一个善于观察人性的股市心理学家。你的特长是解读市场参与者的情绪和心理状态。" +
+            "你关注的是：散户的恐慌和贪婪什么时候到极端、从众心理什么时候会翻车、" +
+            "市场上大多数人现在是什么心态（害怕？兴奋？犹豫？）。" +
+            "第一句话必须给出持仓建议（四选一）：" +
+            "【坚定格局】/【逢高减仓·倒T】/【逢低吸筹·正T】/【危险清仓】。" +
+            "风格：像一个温和但敏锐的心理咨询师，用生活化的比喻讲市场心理。" +
+            "比如：\"现在散户就像超市打折时抢货的大妈\"、\"恐慌情绪已经到了挤地铁踩踏的程度\"。" +
+            "不要用\"贝塔系数\"、\"行为金融学\"这类术语，说人话。不超过80字。",
+        Perspective.PHILOSOPHER to "你是一个炒股多年的哲学爱好者。你的特长是用朴素的辩证法看股市。" +
+            "你关注的是：物极必反（涨多了必跌、跌多了必涨）、否极泰来（最黑暗的时候往往是转机）、" +
+            "矛盾的主次方面（多空力量谁占主导、什么时候会翻转）。" +
+            "第一句话必须给出持仓建议（四选一）：" +
+            "【坚定格局】/【逢高减仓·倒T】/【逢低吸筹·正T】/【危险清仓】。" +
+            "风格：像一个爱讲道理的老股民，说话带点哲理但不掉书袋。" +
+            "比如：\"涨得越猛离摔跤越近\"、\"现在是黎明前最黑的时候，但也可能是暴风雨的开始\"。" +
+            "不要用\"辩证法\"、\"矛盾论\"这些学术词，用大白话讲道理。不超过80字。",
+        Perspective.METAPHYSICIAN to "你是一个浸淫股市二十多年的老股民，满嘴\"玄学口诀\"。你的特长是用老股民的经验之谈看盘。" +
+            "你关注的是：量价关系的\"玄学\"规律（量在价先、天量天价、地量地价）、" +
+            "时间窗口（连跌三天该反弹了、涨了五天该歇歇了）、" +
+            "盘感直觉（早盘跳空高开要小心、尾盘拉升次日大概率低开）。" +
+            "第一句话必须给出持仓建议（四选一）：" +
+            "【坚定格局】/【逢高减仓·倒T】/【逢低吸筹·正T】/【危险清仓】。" +
+            "风格：像营业部里那个天天盯盘的老股民，说话带点\"玄学\"但其实是经验之谈。" +
+            "比如：\"缩量三连阴，见底信号来了\"、\"天量见天价，这波差不多到头了\"、\"早盘急拉不追，午后跳水不割\"。" +
+            "不要用真正的迷信术语（星座、风水），只用股市老话。不超过80字。"
+    )
+
+    /** 根据视角获取 persona prompt */
+    private fun getPersona(perspective: Perspective): String =
+        PERSONA_MAP[perspective] ?: FIXED_PERSONA
 
     // ── 消息面池（30+条，按时间+股票代码混合选择，保证多变） ──
 
@@ -323,7 +382,7 @@ class AIAnalyzer(
         if (configA.apiKey.isBlank()) { onLog("双AI: 主AI未配置API Key"); callback(null); return }
         val useB = configB.enabled && configB.apiKey.isNotBlank()
 
-        onLog(if (useB) "双AI: ${configA.model} / ${configB.model}" else "双AI: ${configA.model}（辅AI未配置）")
+        onLog(if (useB) "双AI: 主=${configA.provider}/${configA.model} 辅=${configB.provider}/${configB.model}" else "双AI: ${configA.model}（辅AI未启用或未配Key）")
         apiExecutor.execute {
             val latch = java.util.concurrent.CountDownLatch(if (useB) 2 else 1)
             var resultA: StanceResult? = null
@@ -352,7 +411,7 @@ class AIAnalyzer(
             }
 
             val ok = latch.await(8, java.util.concurrent.TimeUnit.SECONDS)
-            if (!ok) onLog("双AI: 超时 A=${resultA != null} B=${resultB != null}")
+            if (!ok) onLog("双AI: 8秒超时 A=${if (resultA != null) "✓" else "✗"} B=${if (resultB != null) "✓" else "✗"}（useB=$useB）")
 
             val text = synthesize(resultA, resultB)
             if (text != null) {
@@ -434,6 +493,7 @@ class AIAnalyzer(
             val json = """
                 |{
                 |  "model": "$model",
+                |  "max_tokens": 200,
                 |  "messages": [
                 |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
                 |    {"role": "user", "content": ${toJsonStr(userPrompt)}}
@@ -746,6 +806,7 @@ class AIAnalyzer(
                 val json = """
                     |{
                     |  "model": "${configB.model}",
+                    |  "max_tokens": 200,
                     |  "messages": [
                     |    {"role": "system", "content": ${toJsonStr(systemPrompt)}},
                     |    {"role": "user", "content": ${toJsonStr(userPrompt)}}
@@ -790,8 +851,9 @@ class AIAnalyzer(
         if (prompt.isEmpty()) { onLog("🤖 AI: 等待行情数据..."); callback(null); return }
 
         apiExecutor.execute {
-            onLog("🤖 AI: 深度分析 ${config.model}...")
-            val content = callAi(config.model, FIXED_PERSONA, prompt,
+            val perspective = Perspective.pick()
+            onLog("🤖 AI: 深度分析 ${config.model} [${perspective.label}]...")
+            val content = callAi(config.model, getPersona(perspective), prompt,
                 config.apiUrl, config.apiKey, "🤖 AI")
             if (content != null) lastStance = extractStanceFromContent(content)
             callback(content)
@@ -807,14 +869,15 @@ class AIAnalyzer(
         val prompt = buildPostAlertPrompt(alertText, snapshots, shanghaiIndex, sentiment, stockSector, context)
         if (prompt.isEmpty()) { onLog("🤖 AI: 异动复盘数据不足"); callback(null); return }
 
-        val postAlertPrompt = buildString {
-            append("刚发生异动需要复盘。")
-            append(FIXED_PERSONA)
-            append("结合异动背景和当前盘面数据，用2句口语给出持仓建议，不超过60字。")
-        }
-
         apiExecutor.execute {
-            onLog("🤖 AI: 异动复盘...")
+            val perspective = Perspective.pick()
+            val postAlertPrompt = buildString {
+                append("刚发生异动需要复盘。")
+                append(getPersona(perspective))
+                append("结合异动背景和当前盘面数据，用2句口语给出持仓建议，不超过60字。")
+            }
+
+            onLog("🤖 AI: 异动复盘 [${perspective.label}]...")
             val content = callAi(config.model, postAlertPrompt, prompt,
                 config.apiUrl, config.apiKey, "🤖 AI")
             callback(content)

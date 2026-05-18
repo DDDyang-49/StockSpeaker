@@ -104,19 +104,19 @@ object FundFlowFetcher {
             val allAbs = kotlin.math.abs(mainForce) + kotlin.math.abs(retail)
             val mainForceRatio = if (allAbs > 0) kotlin.math.abs(mainForce) / allAbs * 100 else 0.0
 
-            // 方向判断（日累计数据，基于累计净流入幅度的语义判断）
+            // 方向判断（与 directionLabel getter 阈值保持一致）
             val direction = when {
                 mainForce > 5000 -> "主力大幅买入"
                 mainForce > 1000 -> "主力持续买入"
                 mainForce > 500 -> "主力买入"
                 mainForce > 100 -> "主力小幅买入"
+                mainForce > 30 -> "主力偏多"
                 mainForce < -5000 -> "主力大幅卖出"
                 mainForce < -1000 -> "主力持续卖出"
                 mainForce < -500 -> "主力卖出"
                 mainForce < -100 -> "主力小幅卖出"
-                kotlin.math.abs(mainForce) < 50 -> "资金平静"
-                mainForce > 0 -> "主力偏多"
-                else -> "主力偏空"
+                mainForce < -30 -> "主力偏空"
+                else -> "资金平静"
             }
 
             return FundFlowData(

@@ -80,7 +80,7 @@ class StockMonitorService : Service() {
     private var lastAlertText = ""
     private var lastPostAlertData: StockData? = null
     private val batchQueue = mutableListOf<String>()
-    private val priceHistory = ArrayDeque<Double>(15)  // 滑动窗口价格轨迹（~30秒）
+    private val priceHistory = ArrayDeque<Double>(8)  // 滑动窗口价格轨迹（8点/15秒）
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private val netExecutor = Executors.newSingleThreadExecutor()
     private val sentimentExecutor = Executors.newSingleThreadExecutor()  // 情绪抓取独立线程，不阻塞行情轮询
@@ -131,10 +131,10 @@ class StockMonitorService : Service() {
         config = cm.load()
         aiAnalyzer = AIAnalyzer({
             val c = cm.load()
-            AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, apiUrl = c.aiApiUrl, model = c.aiModel, thinkingModel = c.aiThinkingModel, summaryInterval = c.aiSummaryInterval)
+            AiConfig(enabled = c.aiEnabled, apiKey = c.aiApiKey, apiUrl = c.aiApiUrl, model = c.aiModel, thinkingModel = c.aiThinkingModel, summaryInterval = c.aiSummaryInterval, provider = c.aiProvider)
         }, onLog = { msg -> aiLog(msg) }, aiTwoConfigProvider = {
             val c = cm.load()
-            AiConfig(enabled = c.aiTwoEnabled, apiKey = c.aiTwoApiKey, apiUrl = c.aiTwoApiUrl, model = c.aiTwoModel, thinkingModel = c.aiTwoThinkingModel)
+            AiConfig(enabled = c.aiTwoEnabled, apiKey = c.aiTwoApiKey, apiUrl = c.aiTwoApiUrl, model = c.aiTwoModel, thinkingModel = c.aiTwoThinkingModel, provider = c.aiTwoProvider)
         })
         ttsEngine = TtsEngine(this, cacheDir) { msg -> aiLog(msg) }
         ttsEngine.init()
@@ -226,6 +226,18 @@ class StockMonitorService : Service() {
         // fetch() 可能无限期阻塞。如果把 postDelayed 放在 fetch() 之后，
         // 定时链会因网络阻塞而断裂 —— 这就是息屏停播的根因。
         loopHandler.postDelayed({ runLoop() }, 2000)
+
+        // ── 收盘自动停止播报（15:05 后自动关闭，留 5 分钟缓冲） ──
+        calendar.timeInMillis = System.currentTimeMillis()
+        val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
+        val minute = calendar.get(java.util.Calendar.MINUTE)
+        val dayOfWeek = calendar.get(java.util.Calendar.DAY_OF_WEEK)
+        if (dayOfWeek in 2..6 && (hour > 15 || (hour == 15 && minute >= 5))) {
+            aiLog("🕞 收盘了，自动停止播报")
+            ttsEngine.stop()
+            stopSelf()
+            return
+        }
 
         // 防御性重申请：国产 ROM 会偷偷释放锁，setReferenceCounted(false) 下
         // acquire() 重复调用是安全的。不检查 isHeld——部分 ROM 的 isHeld 返回值不可靠
@@ -334,7 +346,7 @@ class StockMonitorService : Service() {
         val currentHand = if (lastTotalVol > 0) maxOf(0, data.totalVol - lastTotalVol) else 0
         // 滑动窗口区间涨速：用~30秒价格轨迹计算真实区间涨幅，捕捉蚂蚁搬家式连续点火
         priceHistory.addLast(data.price)
-        if (priceHistory.size > 15) priceHistory.removeFirst()
+        if (priceHistory.size > 8) priceHistory.removeFirst()
         val speed = if (priceHistory.size >= 2 && priceHistory.first() > 0) {
             Math.round((data.price - priceHistory.first()) / priceHistory.first() * 10000.0) / 100.0
         } else 0.0
@@ -395,7 +407,7 @@ class StockMonitorService : Service() {
             alertSpoken = true; lastHandAlertTime = now; lastAlertSpeakTime = now
             lastAlertHand = currentHand
         }
-        if (!alertSpoken && absSpeed >= config.speedAlertThreshold && now - lastSpeedAlertTime >= alertCooldownMs) {
+        if (config.speakSpeed && !alertSpoken && absSpeed >= config.speedAlertThreshold && now - lastSpeedAlertTime >= alertCooldownMs) {
             val dir = if (speed > 0) "快速拉升" else "快速下跌"
             val tag = if (speed > 0) "涨幅" else "跌幅"
             alertText = "${alertPrefix()}$dir！${data.name}当前${spokenPrice(data.price)}，${tag}${fmtPct(absSpeed)}%"
@@ -432,7 +444,7 @@ class StockMonitorService : Service() {
         // 异动触发后持续检测盘面，直到连续3轮（6秒）无异动才进入复盘
         if (alertActive) {
             val stillAlertHand = currentHand >= dynThreshold
-            val stillAlertSpeed = absSpeed >= config.speedAlertThreshold
+            val stillAlertSpeed = config.speakSpeed && absSpeed >= config.speedAlertThreshold
             if (stillAlertHand || stillAlertSpeed) {
                 alertSettleCount = 0
                 if (now - lastAlertSpeakTime >= 8000) {
@@ -712,22 +724,21 @@ class StockMonitorService : Service() {
         if (config.speakPct) parts.add(spokenChange(data.changePct))
 
         // v1.1.0: 资金流向放在涨幅之后、其他数据之前，确保突出
-        if (config.speakAmount) {
-            if (config.fundFlowEnabled && !fundFlowCache.isEmpty) {
-                val flowText = "${fundFlowCache.directionLabel}${fundFlowCache.mainForceStr}"
-                // 四象限：流入+跌速 → 派发警告；流出+涨速 → 无量空涨
-                val fundInflow = fundFlowCache.mainForce > 100
-                val fundOutflow = fundFlowCache.mainForce < -100
-                if (fundInflow && speed < 0) {
-                    parts.add("⚠主力派发，$flowText")
-                } else if (fundOutflow && speed > 0.5) {
-                    parts.add("⚠无量空涨，$flowText")
-                } else {
-                    parts.add(flowText)
-                }
+        // 资金流向和成交额各自独立控制
+        if (config.fundFlowEnabled && !fundFlowCache.isEmpty) {
+            val flowText = "${fundFlowCache.directionLabel}${fundFlowCache.mainForceStr}"
+            // 四象限：流入+跌速 → 派发警告；流出+涨速 → 无量空涨
+            val fundInflow = fundFlowCache.mainForce > 100
+            val fundOutflow = fundFlowCache.mainForce < -100
+            if (fundInflow && speed < 0) {
+                parts.add("⚠主力派发，$flowText")
+            } else if (fundOutflow && speed > 0.5) {
+                parts.add("⚠无量空涨，$flowText")
             } else {
-                parts.add("成交${spokenAmount(data.amountStr)}")
+                parts.add(flowText)
             }
+        } else if (config.speakAmount) {
+            parts.add("成交${spokenAmount(data.amountStr)}")
         }
 
         if (config.speakSpeed && Math.abs(speed) >= 0.05) parts.add(spokenSpeed(speed))

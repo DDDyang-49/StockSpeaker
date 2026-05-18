@@ -20,7 +20,7 @@ val AI_PROVIDERS = listOf(
 data class ApiKeyEntry(val key: String, val note: String = "")
 
 data class AppConfig(
-    val stockCode: String = "603960",
+    val stockCode: String = "",
     val speakInterval: Int = 15,
     val largeOrderThreshold: Int = 500,
     val speedAlertThreshold: Double = 0.5,
@@ -73,7 +73,7 @@ class ConfigManager(context: Context) {
 
     private fun readFromPrefs(): AppConfig {
         return AppConfig(
-            stockCode = prefs.getString("stock_code", "603960") ?: "603960",
+            stockCode = prefs.getString("stock_code", "") ?: "",
             speakInterval = prefs.getInt("speak_interval", 15),
             largeOrderThreshold = prefs.getInt("large_order_threshold", 500),
             speedAlertThreshold = prefs.getFloat("speed_alert_threshold", 0.5f).toDouble(),
