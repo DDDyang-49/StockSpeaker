@@ -85,6 +85,10 @@ class StockMonitorService : Service() {
     private var lastPostAlertData: StockData? = null
     private val batchQueue = mutableListOf<String>()
     private val priceHistory = ArrayDeque<Double>(8)  // 滑动窗口价格轨迹（8点/15秒）
+    private val priceWindow = ArrayDeque<Double>(15)  // 动态区间窗口（~30秒，用于振幅检测）
+    private var lastBoxHigh = 0.0   // 动态区间最高价
+    private var lastBoxLow = 0.0    // 动态区间最低价
+    private var boxInitialized = false
     private val intervalLargeEvents = mutableListOf<Triple<String, String, Int>>()
     private val netExecutor = Executors.newSingleThreadExecutor()
     private val sentimentExecutor = Executors.newSingleThreadExecutor()  // 情绪抓取独立线程，不阻塞行情轮询
@@ -189,6 +193,7 @@ class StockMonitorService : Service() {
         dragonTigerTag = ""
         changeStyleIndex = 0; priceStyleIndex = 0; speedStyleIndex = 0
         priceHistory.clear()
+        priceWindow.clear(); boxInitialized = false; lastBoxHigh = 0.0; lastBoxLow = 0.0
         lastSpokenStance = null; lastStanceSpeakTime = 0L  // 重置stance冷却
         lastAiTime = 0L; lastAiPrice = 0.0; lastAiFundDir = ""  // 重置冷冻期
         startForeground(NotificationHelper.NOTIFICATION_ID, NotificationHelper.buildMinimal(this))
@@ -363,6 +368,25 @@ class StockMonitorService : Service() {
         val nowStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(now))
         val absSpeed = Math.abs(speed)
 
+        // ── 动态区间更新（用于振幅检测和箱体突破判断） ──
+        priceWindow.addLast(data.price)
+        if (priceWindow.size > 15) priceWindow.removeFirst()
+        if (!boxInitialized && priceWindow.size >= 5) {
+            lastBoxHigh = priceWindow.max()
+            lastBoxLow = priceWindow.min()
+            boxInitialized = true
+        } else if (boxInitialized) {
+            // 扩展区间：价格突破当前区间时更新边界
+            if (data.price > lastBoxHigh) lastBoxHigh = data.price
+            if (data.price < lastBoxLow) lastBoxLow = data.price
+            // 区间过宽时收缩（超过2%重置，避免旧区间残留）
+            val range = if (lastBoxLow > 0) (lastBoxHigh - lastBoxLow) / lastBoxLow * 100 else 0.0
+            if (range > 2.0 && priceWindow.size >= 5) {
+                lastBoxHigh = priceWindow.max()
+                lastBoxLow = priceWindow.min()
+            }
+        }
+
         val prev = uiState.value
         if (prev.price != data.price || prev.changePct != data.changePct ||
             prev.speed != speed || prev.currentHand != currentHand ||
@@ -414,8 +438,7 @@ class StockMonitorService : Service() {
         }
         if (config.speakSpeed && !alertSpoken && absSpeed >= config.speedAlertThreshold && now - lastSpeedAlertTime >= alertCooldownMs) {
             val dir = if (speed > 0) "快速拉升" else "快速下跌"
-            val tag = if (speed > 0) "涨幅" else "跌幅"
-            alertText = "${alertPrefix()}$dir！${data.name}当前${spokenPrice(data.price)}，${tag}${fmtPct(absSpeed)}%"
+            alertText = "${alertPrefix()}$dir！涨速${fmtPct(absSpeed)}%！"
             ttsEngine.speakAlert(alertText)
             alertSpoken = true; lastSpeedAlertTime = now; lastAlertSpeakTime = now
         }
@@ -458,7 +481,7 @@ class StockMonitorService : Service() {
                         "${alertPrefix()}${spokenHand(currentHand)}${dl}${act}！"
                     } else {
                         val dir = if (speed > 0) "继续拉升" else "继续下跌"
-                        "${alertPrefix()}${data.name}$dir，涨速${fmtPct(absSpeed)}%"
+                        "${alertPrefix()}$dir！涨速${fmtPct(absSpeed)}%！"
                     }
                     ttsEngine.speakAlert(update)
                     lastAlertSpeakTime = now
@@ -521,10 +544,18 @@ class StockMonitorService : Service() {
             }
 
             if (elapsed >= intervalMs) {
-                // 箱体静默：当前价与上次播报价差 < 0.3% 且量比无异动 → 跳过长播报
-                val boxSilent = lastSpokenPrice > 0 &&
-                    Math.abs(data.price - lastSpokenPrice) / lastSpokenPrice < 0.003 &&
-                    data.volRatio < 2.0
+                // 动态区间振幅检测：用近期高低点计算真实振幅
+                val currentAmplitude = if (boxInitialized && lastBoxLow > 0) {
+                    (lastBoxHigh - lastBoxLow) / lastBoxLow * 100
+                } else 999.0  // 未初始化时不做静默
+                // 箱体静默条件：
+                // 1. 动态振幅 < 0.4%（价格在窄幅区间内波动）
+                // 2. 量比 < 2.0（无异常放量）
+                // 3. 涨速绝对值 < 0.3%（没有快速拉升/下跌）
+                val boxSilent = boxInitialized &&
+                    currentAmplitude < 0.4 &&
+                    data.volRatio < 2.0 &&
+                    absSpeed < 0.3
                 if (boxSilent) {
                     ttsEngine.speak("横盘震荡")
                     lastSpeakTime = now; intervalLargeEvents.clear()
@@ -532,7 +563,7 @@ class StockMonitorService : Service() {
                     uiState.value = uiState.value.copy(lastSpeakTime = nowStr)
                     maybeGenerateAiSummary(data, speed)
                 } else {
-                    buildSpeakText(data, currentHand, speed, dynThreshold)?.let { text ->
+                    buildSpeakText(data, currentHand, speed, dynThreshold, skipName = normalBroadcastCount > 0)?.let { text ->
                         if (ttsEngine.speak(text)) {
                             lastSpokenPrice = data.price
                             lastSpeakTime = now; intervalLargeEvents.clear()
@@ -743,10 +774,15 @@ class StockMonitorService : Service() {
         }
     }
 
-    private fun buildSpeakText(data: StockData, currentHand: Int, speed: Double, dynThreshold: Int): String? {
+    private fun buildSpeakText(data: StockData, currentHand: Int, speed: Double, dynThreshold: Int, skipName: Boolean = false): String? {
         val parts = mutableListOf<String>()
-        val h = buildString { append(data.name); if (config.speakPrice) append(spokenPrice(data.price)) }
-        parts.add(h)
+        // 连续播报时跳过股票名称，只播报价格
+        val h = if (skipName) {
+            if (config.speakPrice) spokenPrice(data.price) else ""
+        } else {
+            buildString { append(data.name); if (config.speakPrice) append(spokenPrice(data.price)) }
+        }
+        if (h.isNotBlank()) parts.add(h)
         if (config.speakPct) parts.add(spokenChange(data.changePct))
 
         // v1.1.0: 资金流向放在涨幅之后、其他数据之前，确保突出
@@ -757,19 +793,19 @@ class StockMonitorService : Service() {
             val fundInflow = fundFlowCache.mainForce > 100
             val fundOutflow = fundFlowCache.mainForce < -100
             if (fundInflow && speed < 0) {
-                parts.add("⚠主力派发，$flowText")
+                parts.add("派发警告！$flowText")
             } else if (fundOutflow && speed > 0.5) {
-                parts.add("⚠无量空涨，$flowText")
+                parts.add("无量空涨！$flowText")
             } else {
                 parts.add(flowText)
             }
         } else if (config.speakAmount) {
-            parts.add("成交${spokenAmount(data.amountStr)}")
+            parts.add("${spokenAmount(data.amountStr)}")
         }
 
-        if (config.speakSpeed && Math.abs(speed) >= 0.05) parts.add(spokenSpeed(speed))
+        if (config.speakSpeed && Math.abs(speed) >= 0.1) parts.add(spokenSpeed(speed))
         if (config.speakVolRatio) spokenVolRatio(data.volRatio)?.let { parts.add(it) }
-        if (config.speakCurrentHand && currentHand >= dynThreshold) parts.add("现手${spokenHand(currentHand)}")
+        if (config.speakCurrentHand && currentHand >= dynThreshold) parts.add("${spokenHand(currentHand)}")
 
         // v1.1.0: 板块相对强弱（概念板块自动识别时）
         if (config.conceptAutoDetect && !conceptBlockCache.isEmpty) {
@@ -778,15 +814,15 @@ class StockMonitorService : Service() {
         }
 
         val main = parts.joinToString("，") + "。"
-        val alert = if (config.speakLargeOrders) spokenLargeOrders(data)?.let { "注意，$it。" } ?: "" else ""
+        val alert = if (config.speakLargeOrders) spokenLargeOrders(data)?.let { "$it。" } ?: "" else ""
         val event = intervalLargeEvents.maxByOrNull { it.third }?.let {
-            if (it.third >= dynThreshold) "刚才有${spokenHand(it.third)}${it.second}。" else ""
+            if (it.third >= dynThreshold) "${spokenHand(it.third)}${it.second}。" else ""
         } ?: ""
 
         // 成交明细播报
         val detail = if (config.speakTransactionDetail && currentHand >= dynThreshold) {
             val dir = when { speed > 0.3 -> "买入"; speed < -0.3 -> "卖出"; else -> "" }
-            "${spokenTime()}，${spokenPrice(data.price)}${dir}成交${spokenHand(currentHand)}手。"
+            "${spokenTime()}，${spokenPrice(data.price)}${dir}${spokenHand(currentHand)}手。"
         } else ""
         val full = main + alert + event + detail
         return if (full == "。") null else full
@@ -862,7 +898,7 @@ class StockMonitorService : Service() {
             1 -> buildString {
                 append("${intPart}点")
                 if (jiao > 0) { append(jiao); if (fen > 0) append(fen) }
-                else if (fen > 0) append("零$fen")
+                else if (fen > 0) append("零${digitCn(fen)}")
             }
             else -> if (jiao > 0 || fen > 0) "${intPart}.${jiao}${fen}元" else "${intPart}元"
         }
@@ -917,16 +953,16 @@ class StockMonitorService : Service() {
         volStyleIndex++
         return when {
             vr >= 2.5 -> when (style) {
-                0 -> "明显放量"; 1 -> "放量明显"; else -> "成交量显著放大"
+                0 -> "放量"; 1 -> "放量明显"; else -> "显著放量"
             }
             vr >= 1.3 -> when (style) {
-                0 -> "在放量"; 1 -> "量能温和放大"; else -> "成交趋于活跃"
+                0 -> "温和放量"; 1 -> "量能放大"; else -> "成交活跃"
             }
             vr <= 0.4 -> when (style) {
-                0 -> "明显缩量"; 1 -> "交投清淡"; else -> "成交萎缩"
+                0 -> "缩量"; 1 -> "交投清淡"; else -> "成交萎缩"
             }
             vr <= 0.7 -> when (style) {
-                0 -> "在缩量"; 1 -> "量能偏弱"; else -> "成交不活跃"
+                0 -> "量能偏弱"; 1 -> "缩量"; else -> "成交低迷"
             }
             else -> null
         }
@@ -989,11 +1025,11 @@ class StockMonitorService : Service() {
         val parts = mutableListOf<String>()
         if (data.largeAsksSpeak.isNotEmpty()) {
             val maxAsk = data.asks.maxByOrNull { it.second }; val maxVol = maxAsk?.second ?: 0
-            parts.add(if (data.largeAsksSpeak.size >= 3) "卖盘压力不小，最大${spokenHand(maxVol)}压单" else "卖盘有${spokenHand(maxVol)}压单")
+            parts.add(if (data.largeAsksSpeak.size >= 3) "卖压${spokenHand(maxVol)}" else "卖${spokenHand(maxVol)}压单")
         }
         if (data.largeBidsSpeak.isNotEmpty()) {
             val maxBid = data.bids.maxByOrNull { it.second }; val maxVol = maxBid?.second ?: 0
-            parts.add(if (data.largeBidsSpeak.size >= 3) "买盘托单较多，最大${spokenHand(maxVol)}" else "买盘有${spokenHand(maxVol)}托单")
+            parts.add(if (data.largeBidsSpeak.size >= 3) "买托${spokenHand(maxVol)}" else "买${spokenHand(maxVol)}托单")
         }
         return parts.joinToString("；")
     }

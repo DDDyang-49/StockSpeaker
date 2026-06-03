@@ -79,7 +79,8 @@ enum class PatternType {
     SHARP_REVERSAL,    // 高位急转
     FAKE_BULL,         // 诱多：买单凶猛但价格滞涨
     SILENT_DROP,        // 无量空跌：缩量阴跌无承接
-    ANTS_PULL_UP        // 蚂蚁搬家：中小单连续扫货点火
+    ANTS_PULL_UP,       // 蚂蚁搬家：中小单连续扫货点火
+    EMPTY_LIFT          // 无量拉升：撤卖单拉升，成交稀疏但价格快速上涨
 }
 
 data class Pattern(
@@ -231,7 +232,7 @@ class AIAnalyzer(
         if (absSpeed >= speedThreshold) {
             val dir = if (snapshot.speed > 0) "拉升" else "下跌"
             patterns.add(Pattern(PatternType.SPEED_ALERT,
-                "直线脉冲！当前涨速达${String.format("%.1f", absSpeed)}%，${dir}中。"))
+                "直线${dir}！涨速${String.format("%.1f", absSpeed)}%！"))
         }
 
         // ═══════════════════════════════════════
@@ -245,7 +246,7 @@ class AIAnalyzer(
             val dropThreshold = if (isHot) 1.5 else 0.8
             if (snapshot.changePct >= heightThreshold && dropFromMax >= dropThreshold && snapshot.volRatio >= 1.0) {
                 patterns.add(Pattern(PatternType.SHARP_REVERSAL,
-                    "高位急转！冲高后突发放量砸盘，警惕见顶或假突破！"))
+                    "高位急转！放量砸盘，警惕见顶！"))
             }
         }
 
@@ -255,7 +256,7 @@ class AIAnalyzer(
         if (!isHot && snapshot.volRatio >= 2.5 && snapshot.speed > 0.5 &&
             snapshot.changePct in 0.0..3.0) {
             patterns.add(Pattern(PatternType.VOLUME_BREAKOUT,
-                "平地惊雷！底部突然放量拉升，量比达${String.format("%.1f", snapshot.volRatio)}，注意异动试盘！"))
+                "平地惊雷！底部放量，量比${String.format("%.1f", snapshot.volRatio)}！"))
         }
 
         // ═══════════════════════════════════════
@@ -270,7 +271,7 @@ class AIAnalyzer(
             }
             if (bidIncreaseCount >= 3 && priceChangePct < 0.2 && snapshot.largeAsksCount >= 2) {
                 patterns.add(Pattern(PatternType.FAKE_BULL,
-                    "盘口异常，买单凶猛但上方压单不减，价格滞涨，谨防主力诱多派发！"))
+                    "诱多嫌疑！买单凶猛但价格不动，谨防派发！"))
             }
         }
 
@@ -283,7 +284,7 @@ class AIAnalyzer(
             val dropThreshold = if (isHot) -1.5 else -0.8
             if (cumChange <= dropThreshold && snapshot.volRatio < 0.8 && snapshot.largeBidsCount == 0) {
                 patterns.add(Pattern(PatternType.SILENT_DROP,
-                    "警报！下方买盘真空，连续缩量阴跌，谨防资金踩踏。"))
+                    "买盘真空！缩量阴跌，谨防踩踏！"))
             }
         }
 
@@ -300,7 +301,22 @@ class AIAnalyzer(
             }
             if (cumChange >= antThreshold && bidIncreaseSnapshots < 2) {
                 patterns.add(Pattern(PatternType.ANTS_PULL_UP,
-                    "注意！多笔中小单连续扫货点火，20秒内区间拉升超${String.format("%.1f", cumChange)}%，准备做T！"))
+                    "蚂蚁搬家！中小单连续扫货，拉升${String.format("%.1f", cumChange)}%！"))
+            }
+        }
+
+        // ═══════════════════════════════════════
+        // 7. 无量拉升 (EMPTY_LIFT) —— 撤卖单拉升，成交稀疏但价格快速上涨
+        //    场景：主力撤掉卖单，小笔买单推高价格，成交量很小但涨幅明显
+        // ═══════════════════════════════════════
+        if (recentData.size >= 8) {
+            val last8 = recentData.takeLast(8)
+            val cumChange = (snapshot.price - last8.first().price) / last8.first().price * 100.0
+            // 条件：涨速>0.3% 且 量比<1.0（成交量低于平均水平）且 卖盘稀薄（<=1档大卖单）
+            val liftSpeedThreshold = if (isHot) 0.5 else 0.3
+            if (cumChange >= liftSpeedThreshold && snapshot.volRatio < 1.0 && snapshot.largeAsksCount <= 1) {
+                patterns.add(Pattern(PatternType.EMPTY_LIFT,
+                    "无量拉升！卖盘稀薄，疑似撤单，注意假突破！"))
             }
         }
 
