@@ -2,6 +2,10 @@ package com.stockspeaker
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 data class StockData(
@@ -17,7 +21,12 @@ data class StockData(
     val limitUp: Double = 0.0,          // 涨停价 arr[47]
     val limitDown: Double = 0.0,        // 跌停价 arr[48]
     val bids: List<Pair<Double, Int>> = emptyList(),
-    val asks: List<Pair<Double, Int>> = emptyList()
+    val asks: List<Pair<Double, Int>> = emptyList(),
+    val previousClose: Double = 0.0,
+    val openPrice: Double = 0.0,
+    val dayHigh: Double = 0.0,
+    val dayLow: Double = 0.0,
+    val sourceTimeMillis: Long = 0L
 ) {
     val amountStr: String
         get() = if (amountWan > 10000) "${"%.2f".format(amountWan / 10000)}亿" else "${"%.2f".format(amountWan)}万"
@@ -40,6 +49,10 @@ data class StockData(
 
     val limitDownDist: Double
         get() = if (limitDown > 0 && price > 0) (price - limitDown) / price * 100 else 0.0
+
+    /** 腾讯成交额单位为万元、成交量单位为手；二者可直接换算成交均价。 */
+    val vwap: Double
+        get() = if (amountWan > 0.0 && totalVol > 0) amountWan * 100.0 / totalVol else 0.0
 
     // 延迟缓存：每次2秒轮询可能被多次访问（uiState + 播报），避免重复map
     val largeBids: List<String> by lazy {
@@ -66,31 +79,6 @@ data class StockData(
         }
     }
 }
-
-// ── 行情背景数据（注入AI Prompt的富上下文） ──
-
-data class MarketContext(
-    val stockSector: String = "",
-    // 资金面（来自 FundFlowFetcher + 四象限防伪）
-    val fundFlowDirection: String = "",
-    val fundFlowAmount: String = "",
-    val fundFlowQuadrant: String = "",    // 四象限判定结果（注入AI Prompt）
-    // 板块归属 + Alpha差值（来自 ConceptBlockFetcher）
-    val blockInfo: String = "",
-    val relativeStrength: String = "",
-    val alphaDiff: String = "",          // "个股+2.1% - 板块+0.8% = +1.3%"
-    val sectorPct: Double = 0.0,         // 板块实时涨跌幅
-    // 龙虎榜静态标签（来自 DragonTigerFetcher，SharedPreferences日期缓存）
-    val dragonTigerTag: String = "",
-    // 流通市值评估（来自 StockFetcher）
-    val mcapContext: String = "",
-    // 涨跌停距离
-    val limitDistance: String = "",
-    // 消息面
-    val newsHeadline: String = "",
-    // 异动统计（保留兼容）
-    val alertStats: String = ""
-)
 
 object StockFetcher {
     private val client = OkHttpClient.Builder()
@@ -127,7 +115,7 @@ object StockFetcher {
         else -> "sh$code"
     }
 
-    fun fetch(code: String, threshold: Int = 500): StockData? {
+    fun fetch(code: String): StockData? {
         if (code.isBlank()) return null
         try {
             val url = "https://qt.gtimg.cn/q=${getMarketPrefix(code)}"
@@ -135,7 +123,7 @@ object StockFetcher {
             val response = client.newCall(request).execute()
             response.use { resp ->
                 val body = resp.body?.string() ?: return null
-                return parse(body, threshold)
+                return parse(body)
             }
         } catch (e: Exception) {
             return null
@@ -145,7 +133,7 @@ object StockFetcher {
     private const val SENTINEL_INT = 2147483647   // 脏数据标记值
     private const val SENTINEL_DBL = 2147483647.0
 
-    private fun parse(rawData: String, threshold: Int): StockData? {
+    internal fun parse(rawData: String): StockData? {
         val lines = rawData.trim().split(";")
         for (line in lines) {
             if (line.isBlank() || "=" !in line) continue
@@ -177,7 +165,7 @@ object StockFetcher {
                 if (p == SENTINEL_DBL) p = 0.0
                 var v = arr[i + 1].toIntOrNull() ?: 0
                 if (v == SENTINEL_INT) v = 0
-                Pair(p, if (v >= threshold) v else 0)
+                Pair(p, v)
             }
 
             val asks = (19..27 step 2).map { i ->
@@ -185,13 +173,30 @@ object StockFetcher {
                 if (p == SENTINEL_DBL) p = 0.0
                 var v = arr[i + 1].toIntOrNull() ?: 0
                 if (v == SENTINEL_INT) v = 0
-                Pair(p, if (v >= threshold) v else 0)
+                Pair(p, v)
             }
 
-            return StockData(name, code, price, changePct, totalVol, amountWan, volRatio, turnover, circulatingMcap, limitUp, limitDown, bids, asks)
+            val previousClose = arr[4].toDoubleOrNull()?.takeUnless { it == SENTINEL_DBL } ?: 0.0
+            val openPrice = arr[5].toDoubleOrNull()?.takeUnless { it == SENTINEL_DBL } ?: 0.0
+            val dayHigh = arr[33].toDoubleOrNull()?.takeUnless { it == SENTINEL_DBL } ?: 0.0
+            val dayLow = arr[34].toDoubleOrNull()?.takeUnless { it == SENTINEL_DBL } ?: 0.0
+            val sourceTimeMillis = parseTencentTime(arr.getOrNull(30).orEmpty())
+
+            return StockData(
+                name, code, price, changePct, totalVol, amountWan, volRatio, turnover,
+                circulatingMcap, limitUp, limitDown, bids, asks,
+                previousClose, openPrice, dayHigh, dayLow, sourceTimeMillis
+            )
         }
         return null
     }
+
+    private fun parseTencentTime(raw: String): Long = try {
+        if (!raw.matches(Regex("\\d{14}"))) 0L else SimpleDateFormat("yyyyMMddHHmmss", Locale.US).apply {
+            isLenient = false
+            timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+        }.parse(raw)?.time ?: 0L
+    } catch (_: Exception) { 0L }
 
     /** 拉取近N日日K线，返回格式化文本供AI分析 */
     fun fetchDailyHistoryText(code: String, count: Int = 5): String {
@@ -222,6 +227,35 @@ object StockFetcher {
                 return lines.joinToString("；")
             }
         } catch (_: Exception) { return "" }
+    }
+
+    /** 昨高与近五个完整交易日高点；失败返回空锚点，不伪造数据。 */
+    fun fetchHistoricalAnchors(code: String): HistoricalAnchors {
+        if (code.isBlank()) return HistoricalAnchors()
+        return try {
+            val prefix = getMarketPrefix(code)
+            val url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=$prefix,day,,,7,qfq"
+            client.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                val body = response.body?.string() ?: return HistoricalAnchors()
+                val root = JSONObject(body.substringAfter("=", body))
+                val stock = root.optJSONObject("data")?.optJSONObject(prefix) ?: return HistoricalAnchors()
+                val rows = stock.optJSONArray("qfqday") ?: stock.optJSONArray("day") ?: return HistoricalAnchors()
+                val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                    timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+                }.format(java.util.Date())
+                val highs = mutableListOf<Double>()
+                for (i in 0 until rows.length()) {
+                    val row = rows.optJSONArray(i) ?: continue
+                    if (row.optString(0) == today) continue
+                    row.optDouble(3, 0.0).takeIf { it > 0.0 }?.let(highs::add)
+                }
+                val lastFive = highs.takeLast(5)
+                HistoricalAnchors(
+                    previousHigh = lastFive.lastOrNull() ?: 0.0,
+                    fiveDayHigh = lastFive.maxOrNull() ?: 0.0
+                )
+            }
+        } catch (_: Exception) { HistoricalAnchors() }
     }
 
     /** 拉取上证指数实时数据 */

@@ -12,6 +12,7 @@ import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import okhttp3.OkHttpClient
+import okhttp3.Call
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
@@ -29,7 +30,8 @@ enum class TtsPriority { HIGH, NORMAL }
 class TtsEngine(
     private val context: Context,
     private val cacheDir: File,
-    private val onLog: (String) -> Unit
+    private val onLog: (String) -> Unit,
+    private val routeGuard: AudioRouteGuard
 ) {
     var isReady = false; private set
     var isSpeaking = false; private set
@@ -48,6 +50,8 @@ class TtsEngine(
 
     private var tts: TextToSpeech? = null
     private var mediaPlayer: MediaPlayer? = null
+    @Volatile private var activeCall: Call? = null
+    @Volatile private var activeWebSocket: WebSocket? = null
     private var speechChunks = mutableListOf<String>()
     private var speechCursor = 0
     private var engineScanIndex = -1
@@ -58,12 +62,11 @@ class TtsEngine(
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS -> {
-                // 其他app抢占焦点（如切歌）→ 不停止播报，重新请求MAY_DUCK共存
                 hasAudioFocus = false
-                if (isSpeaking) requestAudioFocus()
+                if (isSpeaking) stop()
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                // 短暂失焦（通知音等）→ 忽略，继续播报
+                // 切歌等极短焦点切换不应截断正在播报的短句。
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 // 系统让我们降音共存 → 预期行为，继续播报
@@ -177,13 +180,18 @@ class TtsEngine(
     }
 
     private val ttsListener = object : UtteranceProgressListener() {
-        override fun onStart(id: String?) { isSpeaking = true }
+        override fun onStart(id: String?) {
+            if (!routeGuard.canSpeakNow()) { stop(); return }
+            isSpeaking = true
+            routeGuard.markSpeaking()
+        }
         override fun onDone(id: String?) {
             speechCursor++
             if (speechCursor >= speechChunks.size) {
                 isSpeaking = false
                 handler.removeCallbacks(speakingTimeout)
                 abandonAudioFocus()
+                routeGuard.markIdle()
             }
         }
         @Deprecated("Deprecated in Java")
@@ -195,15 +203,17 @@ class TtsEngine(
         isSpeaking = false; speechChunks.clear(); speechCursor = 0
         handler.removeCallbacks(speakingTimeout)
         abandonAudioFocus()
+        routeGuard.markIdle()
         onLog("⚠ TTS onError")
     }
 
     // ── 播报 ──
 
     /** 异动播报：中断当前语音，立即插播 */
-    fun speakAlert(text: String) {
+    fun speakAlert(text: String): Boolean {
         stop()
-        requestAudioFocus()
+        if (!routeGuard.canSpeakNow()) { onLog("🔇 未连接或未恢复耳机，已拦截播报"); return false }
+        if (!requestAudioFocus()) return false
         onLog("⚠ 异动: ${text.take(40)}...")
         if (isReady) {
             isSpeaking = true
@@ -213,10 +223,15 @@ class TtsEngine(
             isSpeaking = true
             netExecutor.execute { tryNetworkTts(text) }
         }
+        return true
     }
 
     /** 常规播报：队列追加，正在播报时返回 false */
     fun speak(text: String, priority: TtsPriority = TtsPriority.NORMAL): Boolean {
+        if (!routeGuard.canSpeakNow()) {
+            onLog("🔇 未连接或未恢复耳机，已拦截播报")
+            return false
+        }
         if (priority == TtsPriority.HIGH) {
             stop()
         } else if (isSpeaking) {
@@ -227,7 +242,7 @@ class TtsEngine(
             .map { it.trim() }.filter { it.isNotEmpty() }
         if (sentences.isEmpty()) return false
 
-        requestAudioFocus()
+        if (!requestAudioFocus()) return false
 
         speechChunks.clear(); speechChunks.addAll(sentences)
         speechCursor = 0
@@ -250,11 +265,14 @@ class TtsEngine(
     }
 
     fun stop() {
+        activeCall?.cancel(); activeCall = null
+        activeWebSocket?.cancel(); activeWebSocket = null
         tts?.stop()
         mediaPlayer?.stop(); mediaPlayer?.release(); mediaPlayer = null
         isSpeaking = false; speechChunks.clear(); speechCursor = 0
         handler.removeCallbacks(speakingTimeout)
         abandonAudioFocus()
+        routeGuard.markIdle()
     }
 
     fun shutdown() {
@@ -275,10 +293,7 @@ class TtsEngine(
                 "https://fanyi.baidu.com/") { ok2 ->
                 if (ok2) return@tryHttpTts
                 tryHttpTts("baidu", "https://tts.baidu.com/text2audio?lan=zh&ie=UTF-8&spd=5&text=$encoded") { ok3 ->
-                    if (ok3) return@tryHttpTts
-                    tryHttpTts("youdao", "http://tts.youdao.com/fanyivoice?word=$encoded&le=zh") { ok4 ->
-                        if (!ok4) handler.post { onLog("⚠ 全部网络TTS路径失败"); isSpeaking = false }
-                    }
+                    if (!ok3) handler.post { onLog("⚠ 全部网络TTS路径失败"); isSpeaking = false }
                 }
             }
         }
@@ -306,6 +321,7 @@ class TtsEngine(
             override fun onMessage(ws: WebSocket, text: String) {
                 if (text.contains("turn.end")) {
                     handler.removeCallbacks(timeoutTask); ws.close(1000, "done")
+                    activeWebSocket = null
                     val size = audioChunks.sumOf { it.size }
                     if (size < 200) { handler.post { onResult(false) }; return }
                     saveAndPlay(audioChunks) { handler.post { onResult(true) } }
@@ -316,17 +332,24 @@ class TtsEngine(
                 if (data.isNotEmpty()) audioChunks.add(data)
             }
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                if (activeWebSocket === ws) activeWebSocket = null
                 handler.removeCallbacks(timeoutTask); handler.post { onResult(false) }
             }
-            override fun onClosed(ws: WebSocket, code: Int, reason: String) { handler.removeCallbacks(timeoutTask) }
+            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                if (activeWebSocket === ws) activeWebSocket = null
+                handler.removeCallbacks(timeoutTask)
+            }
         })
+        activeWebSocket = wsRef
     }
 
     private fun tryHttpTts(name: String, url: String, referer: String? = null, onResult: (Boolean) -> Unit) {
         try {
             val ref = referer ?: if (url.contains("baidu")) "https://www.baidu.com/" else "http://www.youdao.com/"
-            val response = httpClient.newCall(Request.Builder().url(url)
-                .header("User-Agent", "Mozilla/5.0").header("Referer", ref).build()).execute()
+            val call = httpClient.newCall(Request.Builder().url(url)
+                .header("User-Agent", "Mozilla/5.0").header("Referer", ref).build())
+            activeCall = call
+            val response = call.execute()
             response.use { resp ->
                 if (!resp.isSuccessful) { onResult(false); return }
                 val body = resp.body ?: run { onResult(false); return }
@@ -336,6 +359,7 @@ class TtsEngine(
                 handler.post { playAudio(mp3File) }; onResult(true)
             }
         } catch (_: Exception) { onResult(false) }
+        finally { activeCall = null }
     }
 
     private fun saveAndPlay(chunks: List<ByteArray>, onDone: () -> Unit) {
@@ -352,30 +376,43 @@ class TtsEngine(
     }
 
     private fun playAudio(file: File) {
+        if (!routeGuard.canSpeakNow()) { file.delete(); stop(); return }
         try {
             mediaPlayer?.release()
+            val output = routeGuard.verifiedOutput() ?: run { file.delete(); stop(); return }
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
                 setDataSource(file.absolutePath)
+                if (Build.VERSION.SDK_INT >= 28 && !setPreferredDevice(output)) {
+                    release(); file.delete(); return
+                }
                 setOnCompletionListener {
                     isSpeaking = false; handler.removeCallbacks(speakingTimeout)
                     abandonAudioFocus()
+                    routeGuard.markIdle()
                     release(); if (mediaPlayer === this) mediaPlayer = null
                     file.delete()
                 }
                 setOnErrorListener { mp, what, extra ->
                     isSpeaking = false; handler.removeCallbacks(speakingTimeout)
                     abandonAudioFocus()
+                    routeGuard.markIdle()
                     onLog("⚠ 播放失败 what=$what"); mp.release()
                     if (mediaPlayer === mp) mediaPlayer = null; file.delete(); true
                 }
-                prepare(); start()
+                prepare()
+                if (!routeGuard.canSpeakNow()) { release(); file.delete(); return }
+                if (Build.VERSION.SDK_INT >= 28 && routedDevice?.id != output.id) {
+                    release(); file.delete(); return
+                }
+                routeGuard.markSpeaking()
+                start()
             }
             handler.postDelayed(speakingTimeout, 15000)
         } catch (e: Exception) {
-            isSpeaking = false; file.delete()
+            isSpeaking = false; routeGuard.markIdle(); file.delete()
         }
     }
 

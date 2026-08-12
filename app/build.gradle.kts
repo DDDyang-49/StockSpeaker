@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,14 +10,26 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.stockspeaker"
+        applicationId = "com.stockspeaker.lean"
         minSdk = 26
         targetSdk = 34
-        versionCode = 32
-        versionName = "1.1.4"
+        versionCode = 33
+        versionName = "1.2.0"
+
+        val local = Properties().apply {
+            val file = rootProject.file("local.properties")
+            if (file.exists()) file.inputStream().use(::load)
+        }
+        val senseNovaKey = (local.getProperty("SENSENOVA_API_KEY")
+            ?: System.getenv("SENSENOVA_API_KEY") ?: "")
+            .replace("\\", "\\\\").replace("\"", "\\\"")
+        buildConfigField("String", "SENSENOVA_API_KEY", "\"$senseNovaKey\"")
     }
 
     buildTypes {
+        debug {
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -27,6 +41,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
@@ -52,4 +67,5 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    testImplementation("junit:junit:4.13.2")
 }

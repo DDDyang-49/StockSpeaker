@@ -34,6 +34,8 @@ jobs:
 
       - name: Setup Gradle and Build
         uses: gradle/gradle-build-action@v3
+        env:
+          SENSENOVA_API_KEY: ${{ secrets.SENSENOVA_API_KEY }}
         with:
           gradle-version: '8.4'
           arguments: assembleDebug
@@ -44,11 +46,6 @@ jobs:
 
       - name: List APK
         run: ls -la app/build/outputs/apk/debug/
-
-      - name: Delete existing tag if any
-        run: |
-          git tag -d "v${{ steps.version.outputs.version }}" 2>/dev/null || true
-          git push origin ":refs/tags/v${{ steps.version.outputs.version }}" 2>/dev/null || true
 
       - name: Create Release and Upload APK
         uses: softprops/action-gh-release@v2

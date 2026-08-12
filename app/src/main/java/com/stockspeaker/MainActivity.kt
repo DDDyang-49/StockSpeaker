@@ -51,6 +51,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -128,7 +129,7 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     var code by remember { mutableStateOf(cfg.stockCode) }
     var interval by remember { mutableStateOf(cfg.speakInterval.toString()) }
     var threshold by remember { mutableStateOf(cfg.largeOrderThreshold.toString()) }
-    var priceOpt by remember { mutableStateOf(cfg.speakPrice) }
+    var priceOpt by remember { mutableStateOf(true) }
     var pctOpt by remember { mutableStateOf(cfg.speakPct) }
     var speedOpt by remember { mutableStateOf(cfg.speakSpeed) }
     var amountOpt by remember { mutableStateOf(cfg.speakAmount) }
@@ -137,26 +138,7 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     var largeOrderOpt by remember { mutableStateOf(cfg.speakLargeOrders) }
     var transactionOpt by remember { mutableStateOf(cfg.speakTransactionDetail) }
     var aiEnabled by remember { mutableStateOf(cfg.aiEnabled) }
-    var aiProvider by remember { mutableStateOf(cfg.aiProvider) }
-    var aiApiUrl by remember { mutableStateOf(cfg.aiApiUrl) }
-    var aiModel by remember { mutableStateOf(cfg.aiModel) }
-    var aiKey by remember { mutableStateOf(cfg.aiApiKey) }
     var aiInterval by remember { mutableStateOf(cfg.aiSummaryInterval.toString()) }
-    var showKey by remember { mutableStateOf(false) }
-    var aiTwoEnabled by remember { mutableStateOf(cfg.aiTwoEnabled) }
-    var aiTwoProvider by remember { mutableStateOf(cfg.aiTwoProvider) }
-    var aiTwoApiUrl by remember { mutableStateOf(cfg.aiTwoApiUrl) }
-    var aiTwoModel by remember { mutableStateOf(cfg.aiTwoModel) }
-    var aiTwoKey by remember { mutableStateOf(cfg.aiTwoApiKey) }
-    var showKey2 by remember { mutableStateOf(false) }
-    var aiKeyNote by remember {
-        val entry = configManager.getApiKeyHistory().find { it.key == cfg.aiApiKey }
-        mutableStateOf(entry?.note ?: "")
-    }
-    var aiTwoKeyNote by remember {
-        val entry = configManager.getApiKeyHistory().find { it.key == cfg.aiTwoApiKey }
-        mutableStateOf(entry?.note ?: "")
-    }
     var stockSector by remember { mutableStateOf(cfg.stockSector) }
     var selectedTab by remember { mutableStateOf(0) }
     // v1.1.0: 新数据源开关（北向已砍——A股盘中不再披露实时北向资金）
@@ -170,24 +152,16 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
     val enabled = !state.isRunning
 
     fun buildConfig(): AppConfig {
-        val pi = AI_PROVIDERS.find { it.id == aiProvider } ?: AI_PROVIDERS[0]
-        val pi2 = AI_PROVIDERS.find { it.id == aiTwoProvider } ?: AI_PROVIDERS[0]
-        val twoKey = aiTwoKey.trim().ifBlank { aiKey.trim() }
         return AppConfig(
             stockCode = code.trim(), speakInterval = interval.toIntOrNull() ?: 15,
             largeOrderThreshold = threshold.toIntOrNull() ?: 500,
-            speakPrice = priceOpt, speakPct = pctOpt,
+            speakPrice = true, speakPct = pctOpt,
             speakCurrentHand = handOpt, speakAmount = amountOpt,
             speakVolRatio = volRatioOpt, speakSpeed = speedOpt,
             speakLargeOrders = largeOrderOpt,
             speakTransactionDetail = transactionOpt,
-            aiEnabled = aiEnabled, aiApiKey = aiKey.trim(),
-            aiProvider = aiProvider, aiApiUrl = aiApiUrl.trim().ifBlank { pi.url }, aiModel = aiModel.trim().ifBlank { pi.model },
-            aiThinkingModel = pi.thinkingModel,
+            aiEnabled = aiEnabled,
             aiSummaryInterval = aiInterval.toIntOrNull() ?: 5,
-            aiTwoEnabled = aiTwoEnabled, aiTwoApiKey = twoKey,
-            aiTwoProvider = aiTwoProvider, aiTwoApiUrl = aiTwoApiUrl.trim().ifBlank { pi2.url }, aiTwoModel = aiTwoModel.trim().ifBlank { pi2.model },
-            aiTwoThinkingModel = pi2.thinkingModel,
             monitoringActive = true,
             stockSector = stockSector.trim(),
             fundFlowEnabled = fundFlowEnabled,
@@ -252,15 +226,8 @@ fun App(configManager: ConfigManager, versionName: String = "1.0.0") {
                 speedOpt, { speedOpt = it }, amountOpt, { amountOpt = it },
                 volRatioOpt, { volRatioOpt = it }, handOpt, { handOpt = it },
                 largeOrderOpt, { largeOrderOpt = it }, transactionOpt, { transactionOpt = it },
-                aiEnabled, { aiEnabled = it }, aiProvider, { id -> aiProvider = id; aiModel = AI_PROVIDERS.find { it.id == id }?.model ?: ""; aiApiUrl = AI_PROVIDERS.find { it.id == id }?.url ?: "" },
-                aiApiUrl, { aiApiUrl = it }, aiModel, { aiModel = it },
-                aiKey, { aiKey = it }, aiInterval, { aiInterval = it },
-                showKey, { showKey = it }, aiTwoEnabled, { aiTwoEnabled = it },
-                aiTwoProvider, { id -> aiTwoProvider = id; aiTwoModel = AI_PROVIDERS.find { it.id == id }?.model ?: ""; aiTwoApiUrl = AI_PROVIDERS.find { it.id == id }?.url ?: "" },
-                aiTwoApiUrl, { aiTwoApiUrl = it }, aiTwoModel, { aiTwoModel = it },
-                aiTwoKey, { aiTwoKey = it },
-                showKey2, { showKey2 = it }, aiKeyNote, { aiKeyNote = it },
-                aiTwoKeyNote, { aiTwoKeyNote = it }, stockSector, { stockSector = it },
+                aiEnabled, { aiEnabled = it }, aiInterval, { aiInterval = it },
+                stockSector, { stockSector = it },
                 fundFlowEnabled, { fundFlowEnabled = it },
                 dragonTigerEnabled, { dragonTigerEnabled = it },
                 conceptAutoDetect, { conceptAutoDetect = it },
@@ -309,6 +276,14 @@ private fun MonitorTab(
             }
             Spacer(Modifier.height(12.dp))
             StatusSection(state)
+            if (state.isRunning && state.audioState != PrivateAudioState.READY &&
+                state.audioState != PrivateAudioState.SPEAKING) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { StockMonitorService.resumePrivateAudio() },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("恢复耳机播报") }
+            }
             Spacer(Modifier.height(8.dp))
         }
 
@@ -375,20 +350,7 @@ private fun SettingsTab(
     largeOrderOpt: Boolean, onLargeOrder: (Boolean) -> Unit,
     transactionOpt: Boolean, onTransaction: (Boolean) -> Unit,
     aiEnabled: Boolean, onAi: (Boolean) -> Unit,
-    aiProvider: String, onAiProvider: (String) -> Unit,
-    aiApiUrl: String, onAiApiUrl: (String) -> Unit,
-    aiModel: String, onAiModel: (String) -> Unit,
-    aiKey: String, onAiKey: (String) -> Unit,
     aiInterval: String, onAiInterval: (String) -> Unit,
-    showKey: Boolean, onShowKey: (Boolean) -> Unit,
-    aiTwoEnabled: Boolean, onAiTwo: (Boolean) -> Unit,
-    aiTwoProvider: String, onAiTwoProvider: (String) -> Unit,
-    aiTwoApiUrl: String, onAiTwoApiUrl: (String) -> Unit,
-    aiTwoModel: String, onAiTwoModel: (String) -> Unit,
-    aiTwoKey: String, onAiTwoKey: (String) -> Unit,
-    showKey2: Boolean, onShowKey2: (Boolean) -> Unit,
-    aiKeyNote: String, onAiKeyNote: (String) -> Unit,
-    aiTwoKeyNote: String, onAiTwoKeyNote: (String) -> Unit,
     stockSector: String, onStockSector: (String) -> Unit,
     fundFlowEnabled: Boolean, onFundFlow: (Boolean) -> Unit,
     dragonTigerEnabled: Boolean, onDragonTiger: (Boolean) -> Unit,
@@ -397,16 +359,8 @@ private fun SettingsTab(
     buildConfig: () -> AppConfig,
     configManager: ConfigManager
 ) {
-    val apiKeyHistory = remember { configManager.getApiKeyHistory() }
     val codeHistory = remember { configManager.getStockCodeHistory() }
-    var apiKeyExpanded by remember { mutableStateOf(false) }
-    var apiKey2Expanded by remember { mutableStateOf(false) }
     var codeExpanded by remember { mutableStateOf(false) }
-
-    fun maskKey(k: String): String {
-        if (k.length <= 8) return k
-        return k.take(4) + "..." + k.takeLast(4)
-    }
 
     Column(
         Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp).verticalScroll(rememberScrollState())
@@ -434,6 +388,8 @@ private fun SettingsTab(
                 }
                 LabelField("播报间隔", value = interval, onValue = onInterval, enabled = enabled, Modifier.weight(1f), suffix = "秒")
             }
+            Text("该间隔用于常规行情；状态异动、连续大额成交和新出现的大挂单会即时简短播报。",
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
             Spacer(Modifier.height(10.dp))
             LabelField("所属题材（选填）", value = stockSector, onValue = onStockSector, enabled = enabled, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
@@ -444,64 +400,24 @@ private fun SettingsTab(
         // ── 播报内容 ──
         Section("播报内容") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f)) { Cb("现价", priceOpt, enabled, onPrice); Cb("涨幅", pctOpt, enabled, onPct); Cb("涨速", speedOpt, enabled, onSpeed) }
+                Column(Modifier.weight(1f)) { Cb("现价（必报）", true, false, {}); Cb("涨幅", pctOpt, enabled, onPct); Cb("涨速", speedOpt, enabled, onSpeed) }
                 Column(Modifier.weight(1f)) { Cb("成交额", amountOpt, enabled, onAmount); Cb("量比", volRatioOpt, enabled, onVolRatio) }
-                Column(Modifier.weight(1f)) { Cb("现手", handOpt, enabled, onHand); Cb("盘口大单", largeOrderOpt, enabled, onLargeOrder); Cb("成交明细", transactionOpt, enabled, onTransaction) }
+                Column(Modifier.weight(1f)) { Cb("近轮新增量", handOpt, enabled, onHand); Cb("盘口大单", largeOrderOpt, enabled, onLargeOrder); Cb("成交明细", transactionOpt, enabled, onTransaction) }
             }
         }
         Spacer(Modifier.height(12.dp))
 
         // ── AI 辅助 ──
-        Section("AI 辅助分析") {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AI_PROVIDERS.forEach { p ->
-                    FilterChip(
-                        selected = aiProvider == p.id,
-                        onClick = { onAiProvider(p.id) },
-                        label = { Text(p.displayName, fontSize = 12.sp) },
-                        enabled = enabled
-                    )
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-            LabelField("模型名称", value = aiModel, onValue = onAiModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(10.dp))
-            LabelField("API URL", value = aiApiUrl, onValue = onAiApiUrl, enabled = enabled, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(6.dp))
-            Text("AI视角自动轮换：游资主力(70%)、心理学家(10%)、哲学家(10%)、玄学家(10%)，避免听感疲劳",
-                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
-            Spacer(Modifier.height(10.dp))
-            // API Key + 历史下拉
-            Box(Modifier.fillMaxWidth()) {
-                LabelField("API Key", value = aiKey, onValue = onAiKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
-                    isPassword = !showKey, trailing = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (apiKeyHistory.isNotEmpty()) {
-                                IconButton(onClick = { apiKeyExpanded = true }) { Icon(Icons.Filled.ArrowDropDown, "历史") }
-                            }
-                            TextButton("显示") { onShowKey(!showKey) }
-                        }
-                    }
-                )
-                DropdownMenu(expanded = apiKeyExpanded, onDismissRequest = { apiKeyExpanded = false }) {
-                    apiKeyHistory.forEach { e ->
-                        val label = maskKey(e.key) + if (e.note.isNotBlank()) "  |  ${e.note}" else ""
-                        DropdownMenuItem(
-                            text = { Text(label, fontSize = 11.sp, fontFamily = FontFamily.Monospace) },
-                            onClick = { onAiKey(e.key); onAiKeyNote(e.note); apiKeyExpanded = false }
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            LabelField("备注", value = aiKeyNote, onValue = onAiKeyNote, enabled = enabled, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(10.dp))
+        Section("AI 辅助（商汤日日新）") {
+            Text("已内置 sensenova-6.7-flash-lite，仅做短句盘面补充；本地异动与风险判断不依赖 AI。",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
+            Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = aiEnabled, onCheckedChange = onAi, enabled = enabled,
                         colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
                     Spacer(Modifier.width(8.dp))
-                    Text("启用AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                    Text("启用 AI 补充", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
                 if (aiEnabled) Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("每", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -512,61 +428,6 @@ private fun SettingsTab(
         }
         Spacer(Modifier.height(12.dp))
 
-        // ── 辅 AI ──
-        Section("辅AI · 资金面分析") {
-            Text("双AI需要同时启用主AI和辅AI。建议使用不同提供商（如主AI DeepSeek + 辅AI EdgeFn Qwen），分析更全面。",
-                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
-            Spacer(Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AI_PROVIDERS.forEach { p ->
-                    FilterChip(
-                        selected = aiTwoProvider == p.id,
-                        onClick = { onAiTwoProvider(p.id) },
-                        label = { Text(p.displayName, fontSize = 12.sp) },
-                        enabled = enabled
-                    )
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-            LabelField("模型名称", value = aiTwoModel, onValue = onAiTwoModel, enabled = enabled, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(10.dp))
-            LabelField("API URL", value = aiTwoApiUrl, onValue = onAiTwoApiUrl, enabled = enabled, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(10.dp))
-            // 辅AI Key + 历史下拉
-            Box(Modifier.fillMaxWidth()) {
-                LabelField("API Key（留空复用主AI）", value = aiTwoKey, onValue = onAiTwoKey, enabled = enabled, modifier = Modifier.fillMaxWidth(),
-                    isPassword = !showKey2, trailing = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (apiKeyHistory.isNotEmpty()) {
-                                IconButton(onClick = { apiKey2Expanded = true }) { Icon(Icons.Filled.ArrowDropDown, "历史") }
-                            }
-                            TextButton("显示") { onShowKey2(!showKey2) }
-                        }
-                    }
-                )
-                DropdownMenu(expanded = apiKey2Expanded, onDismissRequest = { apiKey2Expanded = false }) {
-                    apiKeyHistory.forEach { e ->
-                        val label = maskKey(e.key) + if (e.note.isNotBlank()) "  |  ${e.note}" else ""
-                        DropdownMenuItem(
-                            text = { Text(label, fontSize = 11.sp, fontFamily = FontFamily.Monospace) },
-                            onClick = { onAiTwoKey(e.key); onAiTwoKeyNote(e.note); apiKey2Expanded = false }
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            LabelField("备注", value = aiTwoKeyNote, onValue = onAiTwoKeyNote, enabled = enabled, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(10.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(checked = aiTwoEnabled, onCheckedChange = onAiTwo, enabled = enabled,
-                        colors = SwitchDefaults.colors(checkedTrackColor = MaterialTheme.colorScheme.primary))
-                    Spacer(Modifier.width(8.dp))
-                    Text("启用辅AI", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
-                }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
 
         // ── 数据源增强（v1.1.0） ──
         Section("数据源增强") {
@@ -596,8 +457,6 @@ private fun SettingsTab(
             onClick = {
                 val cfg = buildConfig()
                 configManager.save(cfg)
-                if (cfg.aiApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiApiKey, aiKeyNote)
-                if (cfg.aiTwoApiKey.isNotBlank()) configManager.addApiKeyToHistory(cfg.aiTwoApiKey, aiTwoKeyNote)
             },
             modifier = Modifier.fillMaxWidth().height(44.dp),
             shape = RoundedCornerShape(12.dp),
@@ -608,9 +467,9 @@ private fun SettingsTab(
         }
         Spacer(Modifier.height(12.dp))
 
-        // ── AI 日志 ──
+        // ── 运行日志 ──
         if (state.isRunning && state.aiLog.isNotEmpty()) {
-            Section("AI 日志") {
+            Section("运行日志") {
                 Text(
                     state.aiLog.takeLast(30).joinToString("\n"),
                     fontSize = 10.sp, fontFamily = FontFamily.Monospace,
@@ -848,7 +707,7 @@ private fun StatusSection(state: ServiceUiState) {
             val bg = MaterialTheme.colorScheme.surfaceVariant
             Surface(shape = RoundedCornerShape(10.dp), color = bg, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(10.dp)) {
-                    Text("AI 日志", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("运行日志", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(4.dp))
                     Text(state.aiLog.takeLast(20).joinToString("\n"), fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp)

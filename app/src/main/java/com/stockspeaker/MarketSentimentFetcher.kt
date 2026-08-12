@@ -73,7 +73,6 @@ object MarketSentimentFetcher {
         val breadth = fetchMarketBreadth()
         val sectors = fetchLeadingSectors()
         val top = fetchTopStock()
-        val news = fetchFlashNews()
         return GlobalSentiment(
             upCount = breadth.first,
             downCount = breadth.second,
@@ -82,7 +81,8 @@ object MarketSentimentFetcher {
             leadingSectors = sectors,
             topStock = top.first,
             topStockBoards = top.second,
-            flashNews = news,
+            // 全球财经快讯与当前个股经常无关，不进入听盘链路。
+            flashNews = emptyList(),
             fetchTime = System.currentTimeMillis()
         )
     }
