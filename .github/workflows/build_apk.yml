@@ -32,6 +32,11 @@ jobs:
           echo "is_beta=$IS_BETA" >> $GITHUB_OUTPUT
           echo "Version: $VERSION (beta=$IS_BETA)"
 
+      - name: Require embedded SenseNova key
+        env:
+          SENSENOVA_API_KEY: ${{ secrets.SENSENOVA_API_KEY }}
+        run: test -n "$SENSENOVA_API_KEY" || (echo "SENSENOVA_API_KEY secret is missing" && exit 1)
+
       - name: Setup Gradle and Build
         uses: gradle/gradle-build-action@v3
         env:
